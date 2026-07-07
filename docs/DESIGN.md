@@ -265,3 +265,18 @@ linux-server.yaml
 ```
 
 `web/generated/subscriptions.ts` is generated and ignored by git because it contains full subscription contents.
+
+### Website Deployment
+
+The website deployment workflow is manual. It is triggered with GitHub Actions `workflow_dispatch` and deploys the Vercel project from the repository root so Vercel can apply the Web app root directory setting.
+
+Required GitHub Secrets:
+
+```text
+REEF_WEB_ENV
+VERCEL_TOKEN
+VERCEL_ORG_ID
+VERCEL_PROJECT_ID
+```
+
+`REEF_WEB_ENV` is a multiline `.env` payload for the subscription website. It must include the root seed and public topology values. It must not include `REEF_SSH_PRIVATE_KEY_B64` or test-only variables.

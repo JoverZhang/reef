@@ -1,0 +1,69 @@
+name: Deploy Website
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-website-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Write Reef environment
+        env:
+          REEF_WEB_ENV: ${{ secrets.REEF_WEB_ENV }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -z "${REEF_WEB_ENV}" ]; then
+            echo "REEF_WEB_ENV is empty"
+            exit 1
+          fi
+          printf '%s\n' "${REEF_WEB_ENV}" > .env
+          grep -q '^REEF_SECRET=' .env
+          grep -q '^REEF_EXIT_1=' .env
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Pull Vercel project
+        run: vercel pull --yes --environment=production
+
+      - name: Build
+        run: vercel build --prod
+
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          vercel deploy --prebuilt --prod
+
+      - name: Remove Reef environment
+        if: always()
+        run: rm -f .env
