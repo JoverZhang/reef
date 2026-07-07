@@ -63,11 +63,11 @@ jobs:
       - name: Build
         run: vercel build --prod
 
-      - name: Remove local environment files
-        if: always()
-        run: rm -f .env .vercel/.env*.local
-
       - name: Deploy
         run: |
           set -euo pipefail
           vercel deploy --prebuilt --prod
+
+      - name: Remove local environment files
+        if: always()
+        run: rm -f .env .vercel/.env*.local
