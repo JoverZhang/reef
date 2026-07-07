@@ -1,0 +1,26 @@
+listen: ":{{ route.port }}"
+
+tls:
+  cert: {{ remote_dir }}/certs/server.crt
+  key: {{ remote_dir }}/certs/server.key
+  sniGuard: disable
+
+auth:
+  type: password
+  password: "{{ node.password }}"
+
+trafficStats:
+  listen: 127.0.0.1:{{ route.stats_port }}
+  secret: "{{ route.stats_secret }}"
+
+outbounds:
+  - name: local-client
+    type: socks5
+    socks5:
+      addr: 127.0.0.1:{{ route.socks_port }}
+
+masquerade:
+  type: proxy
+  proxy:
+    url: {{ masquerade_url }}
+    rewriteHost: true

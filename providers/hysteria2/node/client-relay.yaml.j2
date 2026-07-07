@@ -1,0 +1,11 @@
+server: {{ route.exit.ip }}:{{ route.exit_port }}
+
+auth: "{{ route.exit_password }}"
+
+tls:
+  sni: {{ route.exit.ip }}
+  ca: {{ route.exit_ca_path }}
+  pinSHA256: "{{ route.exit_fingerprint }}"
+
+socks5:
+  listen: 127.0.0.1:{{ route.socks_port }}

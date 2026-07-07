@@ -1,0 +1,66 @@
+name: reef-test
+
+networks:
+  reef-test:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+x-node: &node
+  image: ${REEF_TEST_NODE_IMAGE}
+  cap_add:
+    - SYS_ADMIN
+  tmpfs:
+    - /run
+    - /run/lock
+
+services:
+  sg:
+    <<: *node
+    hostname: sg
+    networks:
+      reef-test:
+        ipv4_address: 172.28.0.10
+    ports:
+      - "127.0.0.1:2210:22"
+      - "127.0.0.1:12000:20000/udp"
+      - "127.0.0.1:12001:20001/udp"
+
+  jp:
+    <<: *node
+    hostname: jp
+    networks:
+      reef-test:
+        ipv4_address: 172.28.0.11
+    ports:
+      - "127.0.0.1:2211:22"
+      - "127.0.0.1:12100:20000/udp"
+      - "127.0.0.1:12101:20001/udp"
+
+  us:
+    <<: *node
+    hostname: us
+    networks:
+      reef-test:
+        ipv4_address: 172.28.0.20
+    ports:
+      - "127.0.0.1:2220:22"
+      - "127.0.0.1:12443:443/udp"
+
+  uk:
+    <<: *node
+    hostname: uk
+    networks:
+      reef-test:
+        ipv4_address: 172.28.0.21
+    ports:
+      - "127.0.0.1:2221:22"
+      - "127.0.0.1:12444:443/udp"
+
+  echo:
+    image: ${REEF_TEST_NODE_IMAGE}
+    hostname: echo
+    networks:
+      reef-test:
+        ipv4_address: 172.28.0.30
+    entrypoint: ["python3", "/usr/local/bin/echo_ip.py"]

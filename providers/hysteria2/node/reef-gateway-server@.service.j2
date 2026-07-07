@@ -1,0 +1,15 @@
+[Unit]
+Description=Reef gateway server %i
+Documentation=https://github.com/apernet/hysteria
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{ remote_dir }}/bin/transport server -c {{ remote_dir }}/config/server-%i.yaml
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
