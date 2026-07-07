@@ -1,0 +1,38 @@
+{
+  "log": {
+    "level": "warn"
+  },
+  "inbounds": [
+    {
+      "type": "trojan",
+      "tag": "in",
+      "listen": "0.0.0.0",
+      "listen_port": {{ route.port }},
+      "users": [
+        {
+          "name": "{{ node.id }}",
+          "password": "{{ node.password }}"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "certificate_path": "{{ remote_dir }}/certs/server.crt",
+        "key_path": "{{ remote_dir }}/certs/server.key"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "trojan",
+      "tag": "exit",
+      "server": "{{ route.exit.ip }}",
+      "server_port": {{ route.exit_port }},
+      "password": "{{ route.exit_password }}",
+      "tls": {
+        "enabled": true,
+        "server_name": "{{ route.exit.ip }}",
+        "certificate_path": "{{ route.exit_ca_path }}"
+      }
+    }
+  ]
+}

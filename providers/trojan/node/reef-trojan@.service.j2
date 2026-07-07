@@ -1,0 +1,15 @@
+[Unit]
+Description=Reef Trojan gateway %i
+Documentation=https://sing-box.sagernet.org/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{ remote_dir }}/bin/sing-box run -c {{ remote_dir }}/config/trojan-%i.json
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

@@ -49,6 +49,10 @@ jobs:
           printf '%s\n' "${REEF_WEB_ENV}" > .env
           grep -q '^REEF_SECRET=' .env
           grep -q '^REEF_EXIT_1=' .env
+          if grep -Eq '^(REEF_SSH_PRIVATE_KEY_B64|REEF_TEST_MODE|TEST_[A-Z0-9_]+)=' .env; then
+            echo "REEF_WEB_ENV contains deployment-only or test-only variables"
+            exit 1
+          fi
 
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
@@ -59,11 +63,11 @@ jobs:
       - name: Build
         run: vercel build --prod
 
+      - name: Remove local environment files
+        if: always()
+        run: rm -f .env .vercel/.env*.local
+
       - name: Deploy
         run: |
           set -euo pipefail
           vercel deploy --prebuilt --prod
-
-      - name: Remove Reef environment
-        if: always()
-        run: rm -f .env

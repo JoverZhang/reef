@@ -31,8 +31,11 @@ The first-phase product shape:
 ├── providers/
 │   └── <provider-id>/
 │       ├── provider.yaml
-│       ├── node/
-│       └── subscription/
+│       └── node/
+├── subscriptions/
+│   ├── profiles.yaml
+│   ├── render.py
+│   └── <profile-template>.j2
 ├── reef/
 │   ├── core.py
 │   └── cli/
@@ -51,7 +54,9 @@ The first-phase product shape:
 
 `reef/` contains the core derived model and the thin command entry points used by `justfile`.
 
-`providers/<provider-id>/` is the only place that maintains concrete transport implementation details. The design document describes provider boundaries, not the internals of a specific provider.
+`providers/<provider-id>/` is the only place that maintains concrete node-side transport implementation details. Reef loads every provider bundle in deterministic directory-name order.
+
+`subscriptions/` owns the generated subscription profile set and the rendering logic that translates the core route model plus loaded providers into subscription documents.
 
 ## Generated Artifacts
 
@@ -67,7 +72,7 @@ build/
 │   └── reef_id
 └── subscriptions/
     ├── client.yaml
-    └── linux-server.yaml
+    └── <profile-output>
 
 web/generated/
 └── subscriptions.ts

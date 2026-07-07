@@ -36,9 +36,9 @@ Their purpose:
 
 There is no standalone `render` recipe. Rendering is an internal step used by recipes that need fresh artifacts.
 
-`just smoke` verifies every derived route through generated client configuration:
+`just smoke` verifies every generated client proxy through generated client configuration:
 
-- select exactly one client route
+- select one generated client proxy at a time
 - request to `https://api.ipify.org`
 - assert the returned IP equals the configured exit IP
 
@@ -189,16 +189,17 @@ TLS certificates must be deterministic:
 
 ### Provider Boundary
 
-Concrete transport and subscription rendering lives in provider bundles:
+Concrete node-side transport rendering lives in provider bundles:
 
 ```text
 providers/<provider-id>/
 ├── provider.yaml
-├── node/
-└── subscription/
+└── node/
 ```
 
-The first phase ships one provider bundle. `provider.yaml` is a Reef manifest read by Python. Python turns it into generated files and Ansible inputs. It is not an Ansible playbook.
+Reef loads every provider bundle under `providers/` that contains `provider.yaml`. Directory-name order is used only to keep rendering deterministic. There is no provider selection configuration in the first phase.
+
+`provider.yaml` is a Reef manifest read by Python. Python turns it into generated files and Ansible inputs. It is not an Ansible playbook.
 
 The provider manifest may declare:
 
@@ -206,7 +207,7 @@ The provider manifest may declare:
 - provider-specific route variables required by node templates
 - remote destinations
 - services to install and manage
-- subscription profiles to render
+- route protocols used for local port availability checks
 
 The provider manifest must not define the core route matrix, SSH model, or secret derivation rules. Those belong to Reef.
 
@@ -219,7 +220,6 @@ Not in the first phase:
 - non-root SSH
 - non-Linux-amd64 nodes
 - automatic port selection
-- additional subscription protocols
 - deploying the Web app through Ansible
 - storing mutable local topology or per-node secret state
 
@@ -253,16 +253,19 @@ token = derive(REEF_SECRET, "subscription-url", profile_id)
 `subscription-url` is a derivation label, not a domain name. Reef does not store or render the public domain. `just urls` prints path-only URLs:
 
 ```text
-client        /<token>
-linux-server  /<token>
+<profile-id>  /<token>
 ```
 
-First phase subscription profiles:
+Subscription profiles are declared by `subscriptions/profiles.yaml` and rendered by `subscriptions/render.py`:
 
 ```text
-client.yaml
-linux-server.yaml
+subscriptions/
+├── profiles.yaml
+├── render.py
+└── <profile-template>.j2
 ```
+
+The subscription renderer receives the derived route model and the loaded provider ids. It is the single owner of subscription proxy naming and profile-specific output formatting.
 
 `web/generated/subscriptions.ts` is generated and ignored by git because it contains full subscription contents.
 
