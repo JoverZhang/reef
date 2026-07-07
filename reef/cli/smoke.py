@@ -13,7 +13,15 @@ from pathlib import Path
 
 import yaml
 
-from reef.core import ROOT, _env_path, _require_test_mode, is_ci, load_model, render_subscriptions
+from reef.core import (
+    ROOT,
+    _env_path,
+    _require_test_mode,
+    is_ci,
+    load_model,
+    render_subscriptions,
+    subscription_proxy_metadata,
+)
 
 
 API_SECRET = "reef-smoke"
@@ -101,7 +109,7 @@ def main() -> int:
     config_path = smoke_dir / "client.yaml"
     config_path.write_text(yaml.safe_dump(doc, sort_keys=False))
     config_path.chmod(0o600)
-    smoke_config = model.provider.get("smoke", {})
+    smoke_config = _smoke_config(model)
     if not isinstance(smoke_config, dict) or not smoke_config.get("client_path"):
         raise SystemExit("provider.yaml must declare smoke.client_path")
     log_path = smoke_dir / smoke_config.get("log_name", "client.log")
@@ -119,8 +127,15 @@ def main() -> int:
     try:
         api_base = f"http://127.0.0.1:{api_port}"
         wait_http(f"{api_base}/proxies", {"Authorization": f"Bearer {API_SECRET}"})
-        expected_by_name = {route.name: route.exit.ip for route in model.routes}
-        exit_by_name = {route.name: route.exit.id for route in model.routes}
+        smoke_metadata = subscription_proxy_metadata(
+            model,
+            _env_path("TEST_HOST_MAP"),
+            profile_id="client",
+        )
+        expected_by_name = {
+            item["name"]: item["expected_exit_ip"] for item in smoke_metadata
+        }
+        exit_by_name = {item["name"]: item["exit_id"] for item in smoke_metadata}
         smoke_url = os.environ.get("TEST_SMOKE_URL")
         if smoke_url:
             _require_test_mode("TEST_SMOKE_URL")
@@ -128,6 +143,8 @@ def main() -> int:
             smoke_url = model.config.smoke_url
         for proxy in doc["proxies"]:
             name = proxy["name"]
+            if name not in expected_by_name:
+                raise RuntimeError(f"{name}: missing subscription smoke metadata")
             expected = expected_by_name[name]
             exit_group = exit_by_name[name]
             print(f"smoke {name} -> expect {expected}")
@@ -148,6 +165,14 @@ def main() -> int:
             proc.wait(timeout=5)
         if proc.returncode not in {0, -15, -9, None} and not is_ci():
             print(log_path.read_text()[-4000:], file=sys.stderr)
+
+
+def _smoke_config(model) -> dict:
+    for provider in model.providers:
+        smoke_config = provider.get("smoke", {})
+        if isinstance(smoke_config, dict) and smoke_config.get("client_path"):
+            return smoke_config
+    raise SystemExit("a provider must declare smoke.client_path")
 
 
 if __name__ == "__main__":

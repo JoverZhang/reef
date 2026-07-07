@@ -1,0 +1,48 @@
+id: trojan
+
+runtime:
+  local_path: bin/sing-box-linux-amd64
+  remote_path: "{{ remote_dir }}/bin/sing-box"
+
+vendor:
+  assets:
+    - path: bin/sing-box-linux-amd64
+      tar_gzip: true
+      tar_member: sing-box
+      github_latest:
+        repo: SagerNet/sing-box
+        starts_with: sing-box-
+        ends_with: -linux-amd64.tar.gz
+        reject_contains:
+          - -glibc
+          - -musl
+      check_args: [version]
+
+route_protocols:
+  relay: tcp
+  direct: tcp
+
+services:
+  relay:
+    - reef-trojan@{{ route.exit.id }}.service
+  direct:
+    - reef-trojan@direct.service
+
+node_files:
+  - role: all
+    per: node
+    template: node/reef-trojan@.service.j2
+    output: units/reef-trojan@.service
+    dest: /etc/systemd/system/reef-trojan@.service
+
+  - role: entry
+    per: relay
+    template: node/relay.json.j2
+    output: config/trojan-{{ route.exit.id }}.json
+    dest: /opt/reef/config/trojan-{{ route.exit.id }}.json
+
+  - role: exit
+    per: direct
+    template: node/direct.json.j2
+    output: config/trojan-direct.json
+    dest: /opt/reef/config/trojan-direct.json

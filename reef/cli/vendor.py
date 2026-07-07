@@ -4,10 +4,11 @@ import gzip
 import json
 import shutil
 import subprocess
+import tarfile
 import time
 import urllib.request
 
-from reef.core import ROOT, load_provider
+from reef.core import ROOT, load_providers
 
 
 def download(url: str, dest, *, executable: bool = True) -> None:
@@ -31,7 +32,8 @@ def download(url: str, dest, *, executable: bool = True) -> None:
 
 
 def latest_asset(repo: str, predicate) -> str:
-    with urllib.request.urlopen(f"https://api.github.com/repos/{repo}/releases/latest", timeout=30) as r:
+    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    with urllib.request.urlopen(url, timeout=30) as r:
         data = json.load(r)
     for asset in data["assets"]:
         name = asset["name"]
@@ -41,12 +43,17 @@ def latest_asset(repo: str, predicate) -> str:
 
 
 def main() -> int:
-    provider = load_provider()
-    assets = provider.get("vendor", {}).get("assets", [])
-    if not isinstance(assets, list):
-        raise SystemExit("provider.yaml vendor.assets must be a list")
-    for asset in assets:
-        install_asset(asset)
+    seen: set[str] = set()
+    for provider in load_providers():
+        assets = provider.get("vendor", {}).get("assets", [])
+        if not isinstance(assets, list):
+            raise SystemExit(f"{provider['id']} provider.yaml vendor.assets must be a list")
+        for asset in assets:
+            path = str(asset["path"])
+            if path in seen:
+                continue
+            install_asset(asset)
+            seen.add(path)
     return 0
 
 
@@ -56,7 +63,12 @@ def install_asset(asset: dict) -> None:
         run_check(dest, asset)
         return
     url = asset_url(asset)
-    if asset.get("gzip"):
+    if asset.get("tar_gzip"):
+        tgz_path = dest.with_suffix(dest.suffix + ".tar.gz")
+        download(url, tgz_path, executable=False)
+        extract_tar_member(tgz_path, dest, str(asset["tar_member"]))
+        tgz_path.unlink()
+    elif asset.get("gzip"):
         gz_path = dest.with_suffix(dest.suffix + ".gz")
         download(url, gz_path, executable=False)
         with gzip.open(gz_path, "rb") as src, dest.open("wb") as dst:
@@ -66,6 +78,20 @@ def install_asset(asset: dict) -> None:
     else:
         download(url, dest)
     run_check(dest, asset)
+
+
+def extract_tar_member(archive, dest, member_name: str) -> None:
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar.getmembers():
+            if member.isfile() and member.name.rsplit("/", 1)[-1] == member_name:
+                src = tar.extractfile(member)
+                if src is None:
+                    break
+                with src, dest.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                dest.chmod(0o755)
+                return
+    raise RuntimeError(f"{archive} does not contain {member_name}")
 
 
 def run_check(dest, asset: dict) -> None:

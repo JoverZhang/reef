@@ -1,0 +1,30 @@
+{
+  "log": {
+    "level": "warn"
+  },
+  "inbounds": [
+    {
+      "type": "trojan",
+      "tag": "in",
+      "listen": "0.0.0.0",
+      "listen_port": {{ route.port }},
+      "users": [
+        {
+          "name": "{{ node.id }}",
+          "password": "{{ node.password }}"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "certificate_path": "{{ remote_dir }}/certs/server.crt",
+        "key_path": "{{ remote_dir }}/certs/server.key"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+}

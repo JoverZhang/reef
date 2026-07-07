@@ -41,15 +41,26 @@ listeners:
 proxies:
 {%- for pair in pairs %}
   - name: {{ pair.name }}
+{%- if pair.transport == "hysteria2" %}
     type: hysteria2
-    server: {{ pair.entry_ip }}
-    port: {{ pair.entry_port }}
-    password: "{{ pair.entry_password }}"
+    server: {{ pair.server_host }}
+    port: {{ pair.server_port }}
+    password: "{{ pair.password }}"
     sni: {{ pair.sni }}
-    fingerprint: "{{ pair.entry_cert_fingerprint }}"
+    fingerprint: "{{ pair.cert_fingerprint }}"
     skip-cert-verify: false
     alpn: [h3]
     udp: true
+{%- elif pair.transport == "trojan" %}
+    type: trojan
+    server: {{ pair.server_host }}
+    port: {{ pair.server_port }}
+    password: "{{ pair.password }}"
+    sni: {{ pair.sni }}
+    fingerprint: "{{ pair.cert_fingerprint_hex }}"
+    skip-cert-verify: false
+    udp: false
+{%- endif %}
 {%- endfor %}
 {% else -%}
 proxies: []

@@ -1,0 +1,17 @@
+profiles:
+  - id: client
+    output: client.yaml
+    template: client.yaml.j2
+    content_type: text/yaml; charset=utf-8
+    mixed_port: 7890
+
+  - id: linux-server
+    output: linux-server.yaml
+    template: linux-server.yaml.j2
+    content_type: text/yaml; charset=utf-8
+    mixed_port: 7890
+
+  - id: quantumult-x
+    output: quantumult-x.conf
+    template: quantumult-x.conf.j2
+    content_type: text/plain; charset=utf-8

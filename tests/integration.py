@@ -47,7 +47,12 @@ def write_context() -> tuple[Path, str]:
     return ctx, key_b64
 
 
-def write_env(key_b64: str, *, name: str = ".env", include_uk: bool = True) -> tuple[Path, Path, Path]:
+def write_env(
+    key_b64: str,
+    *,
+    name: str = ".env",
+    include_uk: bool = True,
+) -> tuple[Path, Path, Path]:
     env_path = BUILD / name
     lines = [
         "REEF_SECRET=1111111111111111111111111111111111111111111111111111111111111111",
@@ -119,7 +124,19 @@ def main() -> int:
     ctx, key_b64 = write_context()
     env_path, ssh_map, host_map = write_env(key_b64)
     reduced_env_path, _, _ = write_env(key_b64, name=".env.reduced", include_uk=False)
-    run(["docker", "buildx", "build", "--load", "-f", str(ctx / "Dockerfile"), "-t", IMAGE, str(ctx)])
+    run(
+        [
+            "docker",
+            "buildx",
+            "build",
+            "--load",
+            "-f",
+            str(ctx / "Dockerfile"),
+            "-t",
+            IMAGE,
+            str(ctx),
+        ]
+    )
 
     compose_env = os.environ.copy()
     compose_env["REEF_TEST_NODE_IMAGE"] = IMAGE
@@ -136,7 +153,14 @@ def main() -> int:
         run(["just", "plan"], env=full_recipe_env)
         run(["just", "apply"], env=full_recipe_env)
         run(["just", "urls"], env=full_recipe_env)
-        run([str(ROOT / ".venv" / "bin" / "python"), "-m", "reef.cli.validate_subscriptions"], env=full_recipe_env)
+        run(
+            [
+                str(ROOT / ".venv" / "bin" / "python"),
+                "-m",
+                "reef.cli.validate_subscriptions",
+            ],
+            env=full_recipe_env,
+        )
         run(["just", "smoke"], env=full_recipe_env)
         run(["just", "web-build"], env=full_recipe_env)
         run(["just", "apply"], env=reduced_recipe_env)
@@ -149,14 +173,23 @@ def main() -> int:
                 "-m",
                 "shell",
                 "-a",
-                "test ! -e /opt/reef/config/server-uk.yaml && test ! -e /opt/reef/config/client-uk.yaml && test ! -e /opt/reef/certs/exit-uk.crt && ! systemctl is-active --quiet reef-gateway-server@uk.service && ! systemctl is-active --quiet reef-gateway-client@uk.service",
+                "test ! -e /opt/reef/config/server-uk.yaml && "
+                "test ! -e /opt/reef/config/client-uk.yaml && "
+                "test ! -e /opt/reef/config/trojan-uk.json && "
+                "test ! -e /opt/reef/certs/exit-uk.crt && "
+                "! systemctl is-active --quiet reef-gateway-server@uk.service && "
+                "! systemctl is-active --quiet reef-gateway-client@uk.service && "
+                "! systemctl is-active --quiet reef-trojan@uk.service",
             ],
             env=reduced_recipe_env,
         )
         run(["just", "smoke"], env=reduced_recipe_env)
         run(["just", "delete"], env=full_recipe_env)
     finally:
-        run(["docker", "compose", "-p", PROJECT, "-f", "tests/compose.yml", "down", "-v"], env=compose_env)
+        run(
+            ["docker", "compose", "-p", PROJECT, "-f", "tests/compose.yml", "down", "-v"],
+            env=compose_env,
+        )
         subprocess.run(["docker", "rmi", "-f", IMAGE], cwd=ROOT, check=False)
     return 0
 

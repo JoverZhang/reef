@@ -34,6 +34,10 @@ route_vars:
   direct:
     stats_port: "{{ 13000 + route.exit.index }}"
 
+route_protocols:
+  relay: udp
+  direct: udp
+
 services:
   relay:
     - reef-gateway-server@{{ route.exit.id }}.service
@@ -75,16 +79,3 @@ node_files:
     template: node/server-direct.yaml.j2
     output: config/server-direct.yaml
     dest: /opt/reef/config/server-direct.yaml
-
-subscriptions:
-  - id: client
-    output: client.yaml
-    template: subscription/client.yaml.j2
-    content_type: text/yaml; charset=utf-8
-    mixed_port: 7890
-
-  - id: linux-server
-    output: linux-server.yaml
-    template: subscription/linux-server.yaml.j2
-    content_type: text/yaml; charset=utf-8
-    mixed_port: 7890

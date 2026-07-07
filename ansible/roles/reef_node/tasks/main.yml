@@ -61,6 +61,34 @@
   loop: "{{ (reef_old_marker.files | default([])) | difference(reef_node.files | map(attribute='dest') | list) }}"
   when: reef_marker_stat.stat.exists
 
+- name: Collect stale Reef runtime paths
+  ansible.builtin.set_fact:
+    reef_stale_runtime_paths: >-
+      {{
+        (
+          (reef_old_marker.runtimes | default([]) | map(attribute='dest') | list)
+          + ([reef_old_marker.runtime.dest] if (reef_old_marker.runtime is defined and reef_old_marker.runtime.dest is defined) else [])
+        )
+        | unique
+        | difference(reef_node.runtimes | default([]) | map(attribute='dest') | list)
+      }}
+  when: reef_marker_stat.stat.exists
+
+- name: Refuse unsafe stale Reef runtime paths
+  ansible.builtin.fail:
+    msg: "refusing unsafe stale Reef runtime path {{ item }} on {{ inventory_hostname }}"
+  loop: "{{ reef_stale_runtime_paths | default([]) }}"
+  when:
+    - reef_marker_stat.stat.exists
+    - item is not match("^" ~ (reef_node.remote_dir | regex_escape) ~ "(/|$)")
+
+- name: Remove stale Reef runtime files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ reef_stale_runtime_paths | default([]) }}"
+  when: reef_marker_stat.stat.exists
+
 - name: Create Reef directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -72,11 +100,12 @@
     - "{{ reef_node.remote_dir }}/certs"
     - "{{ reef_node.remote_dir }}/config"
 
-- name: Install transport binary
+- name: Install transport binaries
   ansible.builtin.copy:
-    src: "{{ reef_node.runtime.src }}"
-    dest: "{{ reef_node.runtime.dest }}"
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
     mode: "0755"
+  loop: "{{ reef_node.runtimes }}"
   diff: false
   notify: restart reef services
 

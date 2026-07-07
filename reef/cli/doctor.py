@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import PurePosixPath
 
-from reef.core import REMOTE_DIR, ROOT, load_model, routes_for_node
+from reef.core import REMOTE_DIR, ROOT, load_model, provider_runtimes, routes_for_node
 
 
 def run(cmd: list[str]) -> None:
@@ -22,17 +22,21 @@ def main() -> int:
     for name in ["ssh", "curl", "just"]:
         require(name)
     model = load_model(require_ssh=True)
-    runtime = model.provider.get("runtime", {})
-    if not isinstance(runtime, dict) or not runtime.get("local_path"):
-        raise SystemExit("provider.yaml must declare runtime.local_path")
-    runtime_path = ROOT / runtime["local_path"]
-    if not runtime_path.exists():
-        raise SystemExit(f"missing {runtime_path.relative_to(ROOT)}; run `just vendor`")
+    for runtime in provider_runtimes(model):
+        runtime_path = ROOT / runtime["src"]
+        if not runtime_path.exists():
+            raise SystemExit(f"missing {runtime_path.relative_to(ROOT)}; run `just vendor`")
 
     inventory = ROOT / "build" / "ansible" / "inventory.yml"
     ansible = ROOT / ".venv" / "bin" / "ansible"
     remote_parent = str(PurePosixPath(REMOTE_DIR).parent)
     run([str(ansible), "all", "-i", str(inventory), "-m", "ping"])
+    remote_check = (
+        "test -d /run/systemd/system && "
+        "systemctl --version >/dev/null && "
+        f"test -d {remote_parent} && "
+        "command -v ss >/dev/null"
+    )
     run(
         [
             str(ansible),
@@ -42,29 +46,71 @@ def main() -> int:
             "-m",
             "shell",
             "-a",
-            f"test -d /run/systemd/system && systemctl --version >/dev/null && test -d {remote_parent} && command -v ss >/dev/null",
+            remote_check,
         ]
     )
     for node in model.nodes:
-        ports = sorted({route.port for route in routes_for_node(model, node)})
-        if not ports:
+        checks = sorted(_port_checks(model, node))
+        if not checks:
             continue
-        port_list = " ".join(str(port) for port in ports)
+        check_list = " ".join(f"{protocol}:{port}" for protocol, port in checks)
         script = f"""set -eu
-for port in {port_list}; do
-  rows="$(ss -H -lntu "sport = :$port" 2>/dev/null || true)"
+for check in {check_list}; do
+  proto="${{check%:*}}"
+  port="${{check#*:}}"
+  flags="t"
+  if [ "$proto" = "udp" ]; then
+    flags="u"
+  fi
+  rows="$(ss -H -ln$flags "sport = :$port" 2>/dev/null || true)"
   if [ -n "$rows" ]; then
-    proc="$(ss -H -lntup "sport = :$port" 2>/dev/null || true)"
-    if printf '%s\\n' "$proc" | grep -q 'transport'; then
-      continue
+    proc="$(ss -H -ln${{flags}}p "sport = :$port" 2>/dev/null || true)"
+    if printf '%s\\n' "$proc" | grep -Eq 'transport|sing-box'; then
+      reef_owned=""
+      pids="$(printf '%s\\n' "$proc" | sed -nE 's/.*pid=([0-9]+).*/\\1/p')"
+      for pid in $pids; do
+        exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+        case "$exe" in
+          {REMOTE_DIR}/bin/transport*|{REMOTE_DIR}/bin/sing-box*) reef_owned=1 ;;
+        esac
+      done
+      if [ -n "$reef_owned" ]; then
+        continue
+      fi
     fi
-    echo "port $port is already in use"
+    echo "$proto port $port is already in use"
     printf '%s\\n' "$rows"
     exit 1
   fi
 done"""
         run([str(ansible), node.id, "-i", str(inventory), "-m", "shell", "-a", script])
     return 0
+
+
+def _port_checks(model, node) -> set[tuple[str, int]]:
+    checks: set[tuple[str, int]] = set()
+    routes = routes_for_node(model, node)
+    for provider in model.providers:
+        service_templates = provider.get("services", {})
+        if not isinstance(service_templates, dict):
+            raise SystemExit(f"{provider['id']} provider.yaml services must be a mapping")
+        protocols = provider.get("route_protocols", {})
+        if not isinstance(protocols, dict):
+            raise SystemExit(f"{provider['id']} provider.yaml route_protocols must be a mapping")
+        for route in routes:
+            if not service_templates.get(route.kind):
+                continue
+            if route.kind not in protocols:
+                raise SystemExit(
+                    f"{provider['id']} route_protocols.{route.kind} is required"
+                )
+            protocol = str(protocols[route.kind])
+            if protocol not in {"tcp", "udp"}:
+                raise SystemExit(
+                    f"{provider['id']} route_protocols.{route.kind} must be tcp or udp"
+                )
+            checks.add((protocol, route.port))
+    return checks
 
 
 if __name__ == "__main__":

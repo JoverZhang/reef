@@ -71,7 +71,7 @@ class Model:
     nodes: list[Node]
     routes: list[Route]
     secrets: dict[str, NodeSecret]
-    provider: dict[str, Any]
+    providers: list[dict[str, Any]]
 
 
 def project_path(*parts: str) -> Path:
@@ -147,7 +147,10 @@ def parse_config(values: dict[str, str], *, require_ssh: bool = False) -> Config
     if duplicates:
         raise ValueError(f"duplicate node name(s): {', '.join(duplicates)}")
 
-    entry_port_base = _parse_port(values.get("REEF_ENTRY_PORT_BASE", "20000"), "REEF_ENTRY_PORT_BASE")
+    entry_port_base = _parse_port(
+        values.get("REEF_ENTRY_PORT_BASE", "20000"),
+        "REEF_ENTRY_PORT_BASE",
+    )
     exit_port = _parse_port(values.get("REEF_EXIT_PORT", "443"), "REEF_EXIT_PORT")
     ssh_key = values.get("REEF_SSH_PRIVATE_KEY_B64")
     if require_ssh and not ssh_key:
@@ -212,7 +215,7 @@ def _decode_private_key(value: str) -> bytes:
         raise ValueError("REEF_SSH_PRIVATE_KEY_B64 must be valid base64") from exc
 
 
-def detect_provider_id() -> str:
+def detect_provider_ids() -> list[str]:
     provider_root = project_path("providers")
     ids = sorted(
         path.name
@@ -221,13 +224,10 @@ def detect_provider_id() -> str:
     )
     if not ids:
         raise ValueError("no provider bundle found")
-    if len(ids) > 1:
-        raise ValueError("first phase supports exactly one provider bundle")
-    return ids[0]
+    return ids
 
 
-def load_provider(provider_id: str | None = None) -> dict[str, Any]:
-    provider_id = provider_id or detect_provider_id()
+def load_provider(provider_id: str) -> dict[str, Any]:
     path = project_path("providers", provider_id, "provider.yaml")
     data = yaml.safe_load(path.read_text())
     if not isinstance(data, dict):
@@ -237,9 +237,13 @@ def load_provider(provider_id: str | None = None) -> dict[str, Any]:
     return data
 
 
-def build_model(config: Config, provider_id: str | None = None) -> Model:
+def load_providers(provider_ids: list[str] | None = None) -> list[dict[str, Any]]:
+    return [load_provider(provider_id) for provider_id in (provider_ids or detect_provider_ids())]
+
+
+def build_model(config: Config, provider_ids: list[str] | None = None) -> Model:
     nodes = [*config.entries, *config.exits]
-    provider = load_provider(provider_id)
+    providers = load_providers(provider_ids)
     routes: list[Route] = []
     for entry in config.entries:
         for exit_node in config.exits:
@@ -267,9 +271,10 @@ def build_model(config: Config, provider_id: str | None = None) -> Model:
             )
         )
 
+    validate_providers(providers, routes)
     secret_bytes = bytes.fromhex(config.secret_hex)
     secrets = {node.id: derive_node_secret(secret_bytes, node) for node in nodes}
-    return Model(config=config, nodes=nodes, routes=routes, secrets=secrets, provider=provider)
+    return Model(config=config, nodes=nodes, routes=routes, secrets=secrets, providers=providers)
 
 
 def derive_bytes(secret: bytes, label: str, *parts: str, length: int = 32) -> bytes:
@@ -326,7 +331,85 @@ def derive_node_secret(secret: bytes, node: Node) -> NodeSecret:
     der = cert.public_bytes(serialization.Encoding.DER)
     digest = hashlib.sha256(der).hexdigest()
     fingerprint = ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
-    return NodeSecret(password=password, cert_pem=cert_pem, key_pem=key_pem, fingerprint=fingerprint)
+    return NodeSecret(
+        password=password,
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        fingerprint=fingerprint,
+    )
+
+
+def provider_runtimes(model: Model) -> list[dict[str, str]]:
+    runtimes = []
+    seen_dests: dict[str, str] = {}
+    for provider in model.providers:
+        runtime = provider.get("runtime")
+        if not isinstance(runtime, dict):
+            raise ValueError(f"{provider['id']} provider.yaml must declare runtime")
+        runtime_src = project_path(runtime["local_path"])
+        runtime_dest = _render_inline(runtime["remote_path"], {"remote_dir": REMOTE_DIR})
+        previous = seen_dests.get(runtime_dest)
+        if previous:
+            raise ValueError(
+                f"providers {previous} and {provider['id']} both install runtime to {runtime_dest}"
+            )
+        seen_dests[runtime_dest] = str(provider["id"])
+        runtimes.append(
+            {
+                "id": str(provider["id"]),
+                "src": str(runtime_src),
+                "dest": runtime_dest,
+            }
+        )
+    return runtimes
+
+
+def validate_providers(providers: list[dict[str, Any]], routes: list[Route]) -> None:
+    ids = [str(provider["id"]) for provider in providers]
+    duplicate_ids = sorted({provider_id for provider_id in ids if ids.count(provider_id) > 1})
+    if duplicate_ids:
+        raise ValueError(f"duplicate provider id(s): {', '.join(duplicate_ids)}")
+
+    runtime_dests: dict[str, str] = {}
+    port_claims: dict[tuple[str, str, int], str] = {}
+    for provider in providers:
+        provider_id = str(provider["id"])
+        runtime = provider.get("runtime")
+        if not isinstance(runtime, dict):
+            raise ValueError(f"{provider_id} provider.yaml must declare runtime")
+        runtime_dest = _render_inline(runtime["remote_path"], {"remote_dir": REMOTE_DIR})
+        previous_runtime = runtime_dests.get(runtime_dest)
+        if previous_runtime:
+            raise ValueError(
+                f"providers {previous_runtime} and {provider_id} both install runtime to "
+                f"{runtime_dest}"
+            )
+        runtime_dests[runtime_dest] = provider_id
+
+        service_templates = provider.get("services", {})
+        if not isinstance(service_templates, dict):
+            raise ValueError(f"{provider_id} provider.yaml services must be a mapping")
+        for kind, templates in service_templates.items():
+            if kind not in {"relay", "direct"}:
+                raise ValueError(f"{provider_id} provider.yaml services.{kind} is unsupported")
+            if not isinstance(templates, list):
+                raise ValueError(f"{provider_id} provider.yaml services.{kind} must be a list")
+            if templates:
+                _provider_route_protocol(provider, kind)
+
+        for route in routes:
+            templates = service_templates.get(route.kind, [])
+            if not templates:
+                continue
+            protocol = _provider_route_protocol(provider, route.kind)
+            claim_key = (route.server.id, protocol, route.port)
+            previous_provider = port_claims.get(claim_key)
+            if previous_provider:
+                raise ValueError(
+                    f"providers {previous_provider} and {provider_id} both claim "
+                    f"{protocol} {route.server.id}:{route.port}"
+                )
+            port_claims[claim_key] = provider_id
 
 
 def render_ansible(model: Model, ssh_map_path: Path | None = None) -> None:
@@ -338,11 +421,7 @@ def render_ansible(model: Model, ssh_map_path: Path | None = None) -> None:
     _ensure_private_dir(nodes_dir)
     ssh_map = _load_json_file(ssh_map_path or _env_path("TEST_SSH_MAP"))
 
-    runtime = model.provider.get("runtime")
-    if not isinstance(runtime, dict):
-        raise ValueError("provider.yaml must declare runtime")
-    runtime_src = project_path(runtime["local_path"])
-    runtime_dest = _render_inline(runtime["remote_path"], {"remote_dir": REMOTE_DIR})
+    runtimes = provider_runtimes(model)
 
     ssh_dir = build / "ssh"
     _ensure_private_dir(ssh_dir)
@@ -380,10 +459,7 @@ def render_ansible(model: Model, ssh_map_path: Path | None = None) -> None:
                 "id": node.id,
                 "role": node.role,
                 "remote_dir": REMOTE_DIR,
-                "runtime": {
-                    "src": str(runtime_src),
-                    "dest": runtime_dest,
-                },
+                "runtimes": runtimes,
                 "files": files,
                 "services": services,
             },
@@ -402,7 +478,11 @@ def render_ansible(model: Model, ssh_map_path: Path | None = None) -> None:
     _write_private(ansible_dir / "inventory.yml", yaml.safe_dump(inventory, sort_keys=False))
 
 
-def render_node_files(model: Model, node: Node, out_dir: Path) -> tuple[list[dict[str, str]], list[str]]:
+def render_node_files(
+    model: Model,
+    node: Node,
+    out_dir: Path,
+) -> tuple[list[dict[str, str]], list[str]]:
     if out_dir.exists():
         for path in sorted(out_dir.rglob("*"), reverse=True):
             if path.is_file():
@@ -414,31 +494,35 @@ def render_node_files(model: Model, node: Node, out_dir: Path) -> tuple[list[dic
     node_secret = model.secrets[node.id]
     files: list[dict[str, str]] = []
     file_manifest: list[dict[str, str]] = []
+    seen_dests: dict[str, tuple[str, str]] = {}
+    seen_sources: dict[Path, tuple[str, str]] = {}
 
     def add(rel: str, dest: str, content: str | bytes, mode: str = "0644") -> None:
         src = out_dir / rel
+        content_hash = _sha256(content)
+        signature = (mode, content_hash)
+        existing_dest = seen_dests.get(dest)
+        if existing_dest:
+            if existing_dest != signature:
+                raise ValueError(f"{node.id}: generated file destination conflict: {dest}")
+            existing_source = seen_sources.get(src)
+            if existing_source and existing_source != signature:
+                raise ValueError(f"{node.id}: generated file source conflict: {src}")
+            seen_sources[src] = signature
+            return
+        existing_source = seen_sources.get(src)
+        if existing_source and existing_source != signature:
+            raise ValueError(f"{node.id}: generated file source conflict: {src}")
         _write_private(src, content)
+        seen_dests[dest] = signature
+        seen_sources[src] = signature
         files.append({"src": str(src), "dest": dest, "mode": mode})
-        file_manifest.append({"dest": dest, "mode": mode, "sha256": _sha256(content)})
+        file_manifest.append({"dest": dest, "mode": mode, "sha256": content_hash})
 
     add("certs/server.crt", f"{REMOTE_DIR}/certs/server.crt", node_secret.cert_pem)
     add("certs/server.key", f"{REMOTE_DIR}/certs/server.key", node_secret.key_pem, "0600")
 
-    provider_dir = project_path("providers", str(model.provider["id"]))
-    env = Environment(
-        loader=FileSystemLoader(str(provider_dir)),
-        undefined=StrictUndefined,
-        keep_trailing_newline=True,
-        autoescape=False,
-    )
     routes = routes_for_node(model, node)
-    context_base = {
-        "remote_dir": REMOTE_DIR,
-        "node": _node_dict(node, model),
-        "routes": [_route_dict(model, r) for r in routes],
-        "all_routes": [_route_dict(model, r) for r in model.routes],
-    }
-    context_base.update(_provider_template_vars(model, context_base))
 
     for exit_node in model.config.exits:
         if node.role == "entry":
@@ -449,32 +533,59 @@ def render_node_files(model: Model, node: Node, out_dir: Path) -> tuple[list[dic
                 exit_secret.cert_pem,
             )
 
-    for spec in model.provider.get("node_files", []):
-        role = spec.get("role", "all")
-        if role not in {"all", node.role}:
-            continue
-        per = spec.get("per", "node")
-        if per == "node":
-            items = [None]
-        elif per == "relay":
-            items = [r for r in routes if r.kind == "relay"]
-        elif per == "direct":
-            items = [r for r in routes if r.kind == "direct"]
-        else:
-            raise ValueError(f"unsupported provider per={per!r}")
-        template = env.get_template(spec["template"])
-        for route in items:
-            ctx = dict(context_base)
-            if route is not None:
-                ctx["route"] = _route_dict(model, route)
-            rel = _render_inline(spec["output"], ctx)
-            dest = _render_inline(spec["dest"], ctx)
-            add(rel, dest, template.render(ctx), spec.get("mode", "0644"))
+    for provider in model.providers:
+        provider_dir = project_path("providers", str(provider["id"]))
+        env = Environment(
+            loader=FileSystemLoader(str(provider_dir)),
+            undefined=StrictUndefined,
+            keep_trailing_newline=True,
+            autoescape=False,
+        )
+        context_base = {
+            "remote_dir": REMOTE_DIR,
+            "node": _node_dict(node, model),
+            "routes": [_route_dict(model, r, provider) for r in routes],
+            "all_routes": [_route_dict(model, r, provider) for r in model.routes],
+        }
+        context_base.update(_provider_template_vars(provider, context_base))
+
+        for spec in provider.get("node_files", []):
+            role = spec.get("role", "all")
+            if role not in {"all", node.role}:
+                continue
+            per = spec.get("per", "node")
+            if per == "node":
+                items = [None]
+            elif per == "relay":
+                items = [r for r in routes if r.kind == "relay"]
+            elif per == "direct":
+                items = [r for r in routes if r.kind == "direct"]
+            else:
+                raise ValueError(f"unsupported provider per={per!r}")
+            template = env.get_template(spec["template"])
+            for route in items:
+                ctx = dict(context_base)
+                if route is not None:
+                    ctx["route"] = _route_dict(model, route, provider)
+                rel = _render_inline(spec["output"], ctx)
+                dest = _render_inline(spec["dest"], ctx)
+                add(rel, dest, template.render(ctx), spec.get("mode", "0644"))
 
     services = service_names_for_node(model, node)
-    runtime = model.provider["runtime"]
-    runtime_path = project_path(runtime["local_path"])
-    runtime_hash = hashlib.sha256(runtime_path.read_bytes()).hexdigest() if runtime_path.exists() else ""
+    runtimes = []
+    for provider in model.providers:
+        runtime = provider["runtime"]
+        runtime_path = project_path(runtime["local_path"])
+        runtime_hash = (
+            hashlib.sha256(runtime_path.read_bytes()).hexdigest() if runtime_path.exists() else ""
+        )
+        runtimes.append(
+            {
+                "id": str(provider["id"]),
+                "dest": _render_inline(runtime["remote_path"], {"remote_dir": REMOTE_DIR}),
+                "sha256": runtime_hash,
+            }
+        )
     marker = {
         "managedBy": "reef",
         "schemaVersion": 1,
@@ -483,16 +594,13 @@ def render_node_files(model: Model, node: Node, out_dir: Path) -> tuple[list[dic
         "services": services,
         "files": [item["dest"] for item in files],
         "fileManifest": file_manifest,
-        "runtime": {
-            "dest": _render_inline(runtime["remote_path"], {"remote_dir": REMOTE_DIR}),
-            "sha256": runtime_hash,
-        },
+        "runtimes": runtimes,
     }
     marker["manifestHash"] = "sha256:" + hashlib.sha256(
         json.dumps(
             {
                 "files": file_manifest,
-                "runtime": marker["runtime"],
+                "runtimes": marker["runtimes"],
                 "services": services,
             },
             sort_keys=True,
@@ -510,18 +618,22 @@ def routes_for_node(model: Model, node: Node) -> list[Route]:
 
 def service_names_for_node(model: Model, node: Node) -> list[str]:
     services: list[str] = []
-    service_templates = model.provider.get("services", {})
-    if not isinstance(service_templates, dict):
-        raise ValueError("provider.yaml services must be a mapping")
-    for route in routes_for_node(model, node):
-        templates = service_templates.get(route.kind, [])
-        if not isinstance(templates, list):
-            raise ValueError(f"provider.yaml services.{route.kind} must be a list")
-        route_data = _route_dict(model, route)
-        for template in templates:
-            services.append(
-                _render_inline(str(template), {"route": route_data, "node": _node_dict(node, model)})
-            )
+    for provider in model.providers:
+        service_templates = provider.get("services", {})
+        if not isinstance(service_templates, dict):
+            raise ValueError(f"{provider['id']} provider.yaml services must be a mapping")
+        for route in routes_for_node(model, node):
+            templates = service_templates.get(route.kind, [])
+            if not isinstance(templates, list):
+                raise ValueError(
+                    f"{provider['id']} provider.yaml services.{route.kind} must be a list"
+                )
+            route_data = _route_dict(model, route, provider)
+            for template in templates:
+                context = {"route": route_data, "node": _node_dict(node, model)}
+                services.append(
+                    _render_inline(str(template), context)
+                )
     return services
 
 
@@ -530,8 +642,7 @@ def render_subscriptions(model: Model, host_map_path: Path | None = None) -> lis
     _ensure_private_dir(project_path("build"))
     _ensure_private_dir(build_dir)
     host_map = _load_json_file(host_map_path or _env_path("TEST_HOST_MAP"))
-    provider_id = str(model.provider["id"])
-    renderer = load_subscription_renderer(provider_id)
+    renderer = load_subscription_renderer()
     context = subscription_context(model, host_map)
     rendered = renderer.render(context)
     if hasattr(renderer, "validate"):
@@ -556,6 +667,23 @@ def render_subscriptions(model: Model, host_map_path: Path | None = None) -> lis
     return profiles
 
 
+def subscription_proxy_metadata(
+    model: Model,
+    host_map_path: Path | None = None,
+    *,
+    profile_id: str = "client",
+) -> list[dict[str, Any]]:
+    renderer = load_subscription_renderer()
+    if not hasattr(renderer, "proxy_metadata"):
+        raise ValueError("subscription renderer must define proxy_metadata(context, profile_id)")
+    host_map = _load_json_file(host_map_path or _env_path("TEST_HOST_MAP"))
+    context = subscription_context(model, host_map)
+    metadata = renderer.proxy_metadata(context, profile_id=profile_id)
+    if not isinstance(metadata, list):
+        raise ValueError("subscription proxy metadata must be a list")
+    return metadata
+
+
 def subscription_context(model: Model, host_map: dict[str, Any] | None = None) -> dict[str, Any]:
     routes = []
     for route in model.routes:
@@ -567,22 +695,28 @@ def subscription_context(model: Model, host_map: dict[str, Any] | None = None) -
             item["connect"] = {"host": route.server.ip, "port": route.port}
         routes.append(item)
 
-    provider_id = str(model.provider["id"])
     return {
-        "provider_id": provider_id,
-        "provider_dir": str(project_path("providers", provider_id)),
-        "profiles": model.provider.get("subscriptions", []),
+        "provider_ids": [str(provider["id"]) for provider in model.providers],
+        "profiles": load_subscription_profiles(),
         "routes": routes,
         "exits": [_node_dict(node, model) for node in model.config.exits],
     }
 
 
-def load_subscription_renderer(provider_id: str):
-    path = project_path("providers", provider_id, "subscription", "render.py")
+def load_subscription_profiles() -> list[dict[str, Any]]:
+    path = project_path("subscriptions", "profiles.yaml")
+    data = yaml.safe_load(path.read_text())
+    if not isinstance(data, dict) or not isinstance(data.get("profiles"), list):
+        raise ValueError(f"{path} must contain profiles list")
+    return data["profiles"]
+
+
+def load_subscription_renderer():
+    path = project_path("subscriptions", "render.py")
     if not path.exists():
-        raise ValueError(f"missing provider subscription renderer: {path}")
+        raise ValueError(f"missing subscription renderer: {path}")
     spec = importlib.util.spec_from_file_location(
-        f"reef_provider_{provider_id}_subscription",
+        "reef_subscription_renderer",
         path,
     )
     if spec is None or spec.loader is None:
@@ -624,7 +758,11 @@ def load_model(*, require_ssh: bool = False) -> Model:
     return build_model(parse_config(values, require_ssh=require_ssh))
 
 
-def _route_dict(model: Model, route: Route) -> dict[str, Any]:
+def _route_dict(
+    model: Model,
+    route: Route,
+    provider: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     exit_secret = model.secrets[route.exit.id]
     server_secret = model.secrets[route.server.id]
     data = {
@@ -648,15 +786,20 @@ def _route_dict(model: Model, route: Route) -> dict[str, Any]:
             length=24,
         ),
     }
-    data.update(_provider_route_vars(model, route.kind, data))
+    if provider is not None:
+        data.update(_provider_route_vars(provider, route.kind, data))
     return data
 
 
-def _provider_route_vars(model: Model, kind: str, route_data: dict[str, Any]) -> dict[str, Any]:
-    vars_by_kind = model.provider.get("route_vars", {})
+def _provider_route_vars(
+    provider: dict[str, Any],
+    kind: str,
+    route_data: dict[str, Any],
+) -> dict[str, Any]:
+    vars_by_kind = provider.get("route_vars", {})
     vars_for_kind = vars_by_kind.get(kind, {})
     if not isinstance(vars_for_kind, dict):
-        raise ValueError(f"provider route_vars.{kind} must be a mapping")
+        raise ValueError(f"{provider['id']} provider route_vars.{kind} must be a mapping")
     rendered: dict[str, Any] = {}
     for key, template in vars_for_kind.items():
         if key in route_data:
@@ -665,13 +808,31 @@ def _provider_route_vars(model: Model, kind: str, route_data: dict[str, Any]) ->
     return rendered
 
 
-def _provider_template_vars(model: Model, context_base: dict[str, Any]) -> dict[str, Any]:
-    values = model.provider.get("template_vars", {})
+def _provider_route_protocol(provider: dict[str, Any], kind: str) -> str:
+    protocols = provider.get("route_protocols", {})
+    if not isinstance(protocols, dict):
+        raise ValueError(f"{provider['id']} provider.yaml route_protocols must be a mapping")
+    if kind not in protocols:
+        raise ValueError(f"{provider['id']} provider.yaml route_protocols.{kind} is required")
+    protocol = str(protocols[kind])
+    if protocol not in {"tcp", "udp"}:
+        raise ValueError(f"{provider['id']} route_protocols.{kind} must be tcp or udp")
+    return protocol
+
+
+def _provider_template_vars(
+    provider: dict[str, Any],
+    context_base: dict[str, Any],
+) -> dict[str, Any]:
+    values = provider.get("template_vars", {})
     if not isinstance(values, dict):
-        raise ValueError("provider.yaml template_vars must be a mapping")
+        raise ValueError(f"{provider['id']} provider.yaml template_vars must be a mapping")
     conflicts = sorted(set(values) & set(context_base))
     if conflicts:
-        raise ValueError(f"provider template var conflicts with core context: {', '.join(conflicts)}")
+        raise ValueError(
+            f"{provider['id']} provider template var conflicts with core context: "
+            f"{', '.join(conflicts)}"
+        )
     return values
 
 
@@ -690,7 +851,11 @@ def _node_dict(node: Node | None, model: Model) -> dict[str, Any] | None:
 
 
 def _render_inline(template: str, context: dict[str, Any]) -> str:
-    return Environment(undefined=StrictUndefined, autoescape=False).from_string(template).render(context)
+    return (
+        Environment(undefined=StrictUndefined, autoescape=False)
+        .from_string(template)
+        .render(context)
+    )
 
 
 def _env_path(name: str) -> Path | None:
