@@ -1,0 +1,7 @@
+- name: restart reef services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+    daemon_reload: true
+  loop: "{{ reef_node.services }}"
+  when: not ansible_check_mode

@@ -1,0 +1,44 @@
+FROM debian:12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        systemd \
+        systemd-sysv \
+        openssh-server \
+        iproute2 \
+        curl \
+        ca-certificates \
+        python3 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /run/sshd /root/.ssh \
+    && chmod 0755 /run/sshd \
+    && chmod 0700 /root/.ssh \
+    && systemctl enable ssh.service
+
+COPY id_ed25519.pub /root/.ssh/authorized_keys
+COPY echo_ip.py /usr/local/bin/echo_ip.py
+
+RUN chmod 0600 /root/.ssh/authorized_keys \
+    && chown root:root /root/.ssh/authorized_keys \
+    && chmod 0755 /usr/local/bin/echo_ip.py \
+    && sed -i -E 's/^#?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i -E 's/^#?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config \
+    && sed -i -E 's/^#?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config \
+    && sed -i -E 's/^#?UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config \
+    && systemctl mask \
+        dev-hugepages.mount \
+        sys-fs-fuse-connections.mount \
+        sys-kernel-config.mount \
+        sys-kernel-debug.mount \
+        sys-kernel-tracing.mount \
+        systemd-firstboot.service \
+        systemd-udev-trigger.service \
+        systemd-udevd.service
+
+STOPSIGNAL SIGRTMIN+3
+
+CMD ["/sbin/init"]

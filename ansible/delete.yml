@@ -1,0 +1,75 @@
+- name: Delete Reef node state
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check existing Reef marker
+      ansible.builtin.stat:
+        path: "{{ reef_node.remote_dir }}/.managed.json"
+      register: reef_marker_stat
+
+    - name: Read existing Reef marker
+      ansible.builtin.slurp:
+        path: "{{ reef_node.remote_dir }}/.managed.json"
+      register: reef_marker_raw
+      when: reef_marker_stat.stat.exists
+
+    - name: Parse existing Reef marker
+      ansible.builtin.set_fact:
+        reef_old_marker: "{{ reef_marker_raw.content | b64decode | from_json }}"
+      when: reef_marker_stat.stat.exists
+
+    - name: Default existing Reef marker
+      ansible.builtin.set_fact:
+        reef_old_marker: {}
+      when: not reef_marker_stat.stat.exists
+
+    - name: Refuse conflicting Reef marker
+      ansible.builtin.fail:
+        msg: "refusing to delete non-matching Reef marker on {{ inventory_hostname }}"
+      when:
+        - reef_marker_stat.stat.exists
+        - (reef_old_marker.managedBy | default("")) != "reef" or (reef_old_marker.nodeId | default("")) != inventory_hostname
+
+    - name: Refuse unsafe Reef service names
+      ansible.builtin.fail:
+        msg: "refusing unsafe Reef service name {{ item }} on {{ inventory_hostname }}"
+      loop: "{{ ((reef_old_marker.services | default([])) + reef_node.services) | unique | list }}"
+      when:
+        - reef_marker_stat.stat.exists
+        - item is not match("^reef-[A-Za-z0-9_.@-]+\\.service$")
+
+    - name: Stop and disable Reef service instances
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+      loop: "{{ ((reef_old_marker.services | default([])) + reef_node.services) | unique | list }}"
+      when: reef_marker_stat.stat.exists
+      failed_when: false
+
+    - name: Refuse unsafe Reef managed file paths
+      ansible.builtin.fail:
+        msg: "refusing unsafe Reef managed file path {{ item }} on {{ inventory_hostname }}"
+      loop: "{{ ((reef_old_marker.files | default([])) + (reef_node.files | map(attribute='dest') | list)) | unique | list }}"
+      when:
+        - reef_marker_stat.stat.exists
+        - item is not match("^" ~ (reef_node.remote_dir | regex_escape) ~ "(/|$)")
+        - item is not match("^/etc/systemd/system/reef-[A-Za-z0-9_.@-]+\\.service$")
+
+    - name: Remove Reef managed files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ ((reef_old_marker.files | default([])) + (reef_node.files | map(attribute='dest') | list)) | unique | list }}"
+      when: reef_marker_stat.stat.exists
+
+    - name: Remove Reef remote directory
+      ansible.builtin.file:
+        path: "{{ reef_node.remote_dir }}"
+        state: absent
+      when: reef_marker_stat.stat.exists
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: reef_marker_stat.stat.exists

@@ -1,0 +1,21 @@
+{
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "prebuild": "cd .. && python3 -m pip install -q --upgrade --no-warn-conflicts -r requirements.txt --target build/web-python && PYTHONPATH=build/web-python python3 -m reef.cli.render web",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build",
+    "dev": "next dev",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "16.2.10",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "typescript": "6.0.3"
+  }
+}

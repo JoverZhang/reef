@@ -1,0 +1,20 @@
+listen: ":{{ route.port }}"
+
+tls:
+  cert: {{ remote_dir }}/certs/server.crt
+  key: {{ remote_dir }}/certs/server.key
+  sniGuard: disable
+
+auth:
+  type: password
+  password: "{{ node.password }}"
+
+trafficStats:
+  listen: 127.0.0.1:{{ route.stats_port }}
+  secret: "{{ route.stats_secret }}"
+
+masquerade:
+  type: proxy
+  proxy:
+    url: {{ masquerade_url }}
+    rewriteHost: true

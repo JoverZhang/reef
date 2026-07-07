@@ -1,0 +1,5 @@
+- name: Apply Reef node state
+  hosts: all
+  gather_facts: false
+  roles:
+    - reef_node

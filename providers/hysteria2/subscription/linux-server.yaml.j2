@@ -1,0 +1,73 @@
+mixed-port: {{ mixed_port }}
+allow-lan: true
+mode: rule
+log-level: info
+ipv6: false
+
+profile:
+  store-fake-ip: true
+
+tun:
+  enable: false
+
+dns:
+  enable: true
+  listen: 127.0.0.1:11053
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  use-hosts: true
+
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+
+  proxy-server-nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+
+listeners:
+  - name: tproxy-in
+    type: tproxy
+    listen: 127.0.0.1
+    port: 17894
+    udp: true
+
+{% if pairs | length > 0 -%}
+proxies:
+{%- for pair in pairs %}
+  - name: {{ pair.name }}
+    type: hysteria2
+    server: {{ pair.entry_ip }}
+    port: {{ pair.entry_port }}
+    password: "{{ pair.entry_password }}"
+    sni: {{ pair.sni }}
+    fingerprint: "{{ pair.entry_cert_fingerprint }}"
+    skip-cert-verify: false
+    alpn: [h3]
+    udp: true
+{%- endfor %}
+{% else -%}
+proxies: []
+{%- endif %}
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [{% for group in exit_groups %}{{ group.name }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{%- for group in exit_groups %}
+  - name: {{ group.name }}
+    type: url-test
+    proxies: [{% for proxy in group.proxies %}{{ proxy }}{% if not loop.last %}, {% endif %}{% endfor %}]
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    timeout: 5000
+    lazy: true
+{%- endfor %}
+
+rules:
+  - MATCH,PROXY
