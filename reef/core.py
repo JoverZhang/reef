@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.x509.oid import NameOID
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE_DIR = "/opt/reef"
 SECRET_RE = re.compile(r"^[0-9a-f]{64}$")
 NODE_RE = re.compile(r"^REEF_(ENTRY|EXIT)_(\d+)$")
+# NIST P-256 group order. cryptography exposes SECP256R1(), but not the scalar
+# field order needed to derive a deterministic private key from REEF_SECRET.
+P256_ORDER = int("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
 
 
 @dataclass(frozen=True)
@@ -297,8 +300,12 @@ def derive_text(secret: bytes, label: str, *parts: str, length: int = 32) -> str
 
 def derive_node_secret(secret: bytes, node: Node) -> NodeSecret:
     password = derive_text(secret, "node-password", node.id, length=32)
-    key_seed = derive_bytes(secret, "node-tls-key", node.id, length=32)
-    key = ed25519.Ed25519PrivateKey.from_private_bytes(key_seed)
+    # Use a 384-bit HKDF output before reducing into the P-256 scalar range.
+    # That keeps the modulo bias negligible while preserving deterministic
+    # rendering across local, CI, remote node, and Web subscription builds.
+    key_seed = derive_bytes(secret, "node-tls-key", node.id, length=48)
+    private_value = int.from_bytes(key_seed, "big") % (P256_ORDER - 1) + 1
+    key = ec.derive_private_key(private_value, ec.SECP256R1())
 
     subject = issuer = x509.Name(
         [
@@ -320,7 +327,7 @@ def derive_node_secret(secret: bytes, node: Node) -> NodeSecret:
             x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(node.ip))]),
             critical=False,
         )
-        .sign(key, algorithm=None)
+        .sign(key, algorithm=hashes.SHA256())
     )
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     key_pem = key.private_bytes(
