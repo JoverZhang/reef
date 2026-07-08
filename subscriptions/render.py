@@ -254,6 +254,21 @@ def _check_groups(
 
 def _check_quantumult_x(body: str, pairs: list[dict[str, Any]], exits: list[str]) -> None:
     lines = [line.strip() for line in body.splitlines() if line.strip()]
+    required_sections = {
+        "[general]",
+        "[dns]",
+        "[server_local]",
+        "[server_remote]",
+        "[policy]",
+        "[filter_local]",
+        "[rewrite_remote]",
+        "[rewrite_local]",
+        "[mitm]",
+    }
+    missing_sections = sorted(required_sections - set(lines))
+    if missing_sections:
+        raise ValueError("quantumult-x missing section(s): " + ", ".join(missing_sections))
+
     server_lines = [line for line in lines if line.startswith("trojan=")]
     _expect(len(server_lines), len(pairs), "quantumult-x trojan count mismatch")
     for line, pair in zip(server_lines, pairs, strict=True):
@@ -268,6 +283,10 @@ def _check_quantumult_x(body: str, pairs: list[dict[str, Any]], exits: list[str]
         if f"tls-cert-sha256={pair['cert_fingerprint_hex']}" not in line:
             raise ValueError(f"quantumult-x missing tls-cert-sha256 for {pair['name']}")
 
+    top_policy = next((line for line in lines if line.startswith("static=Reef,")), "")
+    if not top_policy:
+        raise ValueError("quantumult-x missing Reef policy")
+
     policy_lines = [line for line in lines if line.startswith("url-latency-benchmark=")]
     _expect(len(policy_lines), len(exits), "quantumult-x exit policy count mismatch")
     for exit_name in exits:
@@ -279,6 +298,11 @@ def _check_quantumult_x(body: str, pairs: list[dict[str, Any]], exits: list[str]
         ]
         if len(matching) != 1:
             raise ValueError(f"quantumult-x missing policy for {exit_name}")
+        if exit_name not in top_policy:
+            raise ValueError(f"quantumult-x Reef policy missing {exit_name}")
         for proxy_name in expected:
             if proxy_name not in matching[0]:
                 raise ValueError(f"quantumult-x {exit_name} policy missing {proxy_name}")
+
+    if "final, Reef" not in lines:
+        raise ValueError("quantumult-x final rule must use Reef policy")
