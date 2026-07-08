@@ -21,6 +21,7 @@ jobs:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_GIT_AUTHOR_EMAIL: ${{ secrets.VERCEL_GIT_AUTHOR_EMAIL }}
 
     steps:
       - name: Checkout
@@ -69,7 +70,12 @@ jobs:
       - name: Deploy
         run: |
           set -euo pipefail
-          vercel deploy --prebuilt --prod
+          if [ -z "${VERCEL_GIT_AUTHOR_EMAIL}" ]; then
+            echo "VERCEL_GIT_AUTHOR_EMAIL is empty"
+            exit 1
+          fi
+          vercel deploy --prebuilt --prod \
+            -m githubCommitAuthorEmail="${VERCEL_GIT_AUTHOR_EMAIL}"
 
       - name: Remove local environment files
         if: always()
