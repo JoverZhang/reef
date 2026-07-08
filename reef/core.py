@@ -458,7 +458,12 @@ def render_ansible(model: Model, ssh_map_path: Path | None = None) -> None:
 
     for node in model.nodes:
         host = _node_ssh_host(node, ssh_map)
-        files, services = render_node_files(model, node, nodes_dir / node.id)
+        files, services, desired, deploy_items = render_node_files(
+            model,
+            node,
+            nodes_dir / node.id,
+        )
+        manifest_prefix = desired["marker"]["manifestHash"].removeprefix("sha256:")[:16]
         host_vars: dict[str, Any] = {
             "ansible_host": host["host"],
             "ansible_port": host["port"],
@@ -469,6 +474,9 @@ def render_ansible(model: Model, ssh_map_path: Path | None = None) -> None:
                 "runtimes": runtimes,
                 "files": files,
                 "services": services,
+                "desired": desired,
+                "deploy_items": deploy_items,
+                "stage_dir": f"/tmp/reef-{node.id}-{manifest_prefix}",
             },
         }
         if node.role == "exit" and model.config.entries:
@@ -489,7 +497,7 @@ def render_node_files(
     model: Model,
     node: Node,
     out_dir: Path,
-) -> tuple[list[dict[str, str]], list[str]]:
+) -> tuple[list[dict[str, str]], list[str], dict[str, Any], list[dict[str, str]]]:
     if out_dir.exists():
         for path in sorted(out_dir.rglob("*"), reverse=True):
             if path.is_file():
@@ -523,7 +531,15 @@ def render_node_files(
         _write_private(src, content)
         seen_dests[dest] = signature
         seen_sources[src] = signature
-        files.append({"src": str(src), "dest": dest, "mode": mode})
+        files.append(
+            {
+                "id": _deploy_item_id(dest),
+                "src": str(src),
+                "dest": dest,
+                "mode": mode,
+                "sha256": content_hash,
+            }
+        )
         file_manifest.append({"dest": dest, "mode": mode, "sha256": content_hash})
 
     add("certs/server.crt", f"{REMOTE_DIR}/certs/server.crt", node_secret.cert_pem)
@@ -579,17 +595,28 @@ def render_node_files(
                 add(rel, dest, template.render(ctx), spec.get("mode", "0644"))
 
     services = service_names_for_node(model, node)
-    runtimes = []
+    runtime_manifest = []
+    deploy_runtimes = []
     for provider in model.providers:
         runtime = provider["runtime"]
         runtime_path = project_path(runtime["local_path"])
-        runtime_hash = (
-            hashlib.sha256(runtime_path.read_bytes()).hexdigest() if runtime_path.exists() else ""
-        )
-        runtimes.append(
+        if not runtime_path.exists():
+            raise ValueError(f"missing runtime {runtime_path}; run just vendor")
+        runtime_hash = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+        runtime_dest = _render_inline(runtime["remote_path"], {"remote_dir": REMOTE_DIR})
+        runtime_manifest.append(
             {
                 "id": str(provider["id"]),
-                "dest": _render_inline(runtime["remote_path"], {"remote_dir": REMOTE_DIR}),
+                "dest": runtime_dest,
+                "sha256": runtime_hash,
+            }
+        )
+        deploy_runtimes.append(
+            {
+                "id": _deploy_item_id(runtime_dest),
+                "src": str(runtime_path),
+                "dest": runtime_dest,
+                "mode": "0755",
                 "sha256": runtime_hash,
             }
         )
@@ -601,7 +628,7 @@ def render_node_files(
         "services": services,
         "files": [item["dest"] for item in files],
         "fileManifest": file_manifest,
-        "runtimes": runtimes,
+        "runtimes": runtime_manifest,
     }
     marker["manifestHash"] = "sha256:" + hashlib.sha256(
         json.dumps(
@@ -614,7 +641,97 @@ def render_node_files(
         ).encode()
     ).hexdigest()
     add("managed.json", f"{REMOTE_DIR}/.managed.json", json.dumps(marker, indent=2) + "\n")
-    return files, services
+    item_services = _infer_item_services(files, deploy_runtimes, services)
+    deploy_items = [*files, *deploy_runtimes]
+    desired = {
+        "remoteDir": REMOTE_DIR,
+        "marker": marker,
+        "items": [
+            {
+                "id": item["id"],
+                "dest": item["dest"],
+                "mode": item["mode"],
+                "sha256": item["sha256"],
+                "services": sorted(item_services.get(item["dest"], set())),
+                "systemd": _is_systemd_unit_path(item["dest"]),
+            }
+            for item in deploy_items
+        ],
+    }
+    return files, services, desired, deploy_items
+
+
+def _deploy_item_id(dest: str) -> str:
+    return "item-" + hashlib.sha256(dest.encode()).hexdigest()[:16]
+
+
+def _infer_item_services(
+    files: list[dict[str, str]],
+    runtimes: list[dict[str, str]],
+    services: list[str],
+) -> dict[str, set[str]]:
+    items = [*files, *runtimes]
+    by_dest = {item["dest"]: item for item in items}
+    all_dests = set(by_dest)
+    result: dict[str, set[str]] = {dest: set() for dest in all_dests}
+
+    for service in services:
+        direct = set()
+        unit_dest = _unit_dest_for_service(service)
+        if unit_dest in by_dest:
+            direct.add(unit_dest)
+            direct.update(
+                _referenced_dests(
+                    Path(by_dest[unit_dest]["src"]),
+                    all_dests,
+                    instance=_service_instance(service),
+                )
+            )
+
+        seen = set()
+        pending = list(direct)
+        while pending:
+            dest = pending.pop()
+            if dest in seen:
+                continue
+            seen.add(dest)
+            item = by_dest.get(dest)
+            if item and item.get("src") and not _is_systemd_unit_path(dest):
+                pending.extend(_referenced_dests(Path(item["src"]), all_dests) - seen)
+
+        for dest in seen:
+            result.setdefault(dest, set()).add(service)
+
+    return result
+
+
+def _referenced_dests(path: Path, dests: set[str], *, instance: str | None = None) -> set[str]:
+    try:
+        content = path.read_text(errors="ignore")
+    except UnicodeDecodeError:
+        return set()
+    if instance is not None:
+        content = content.replace("%i", instance).replace("%I", instance)
+    return {dest for dest in dests if dest in content}
+
+
+def _unit_dest_for_service(service: str) -> str:
+    name = service.removesuffix(".service")
+    if "@" in name:
+        prefix = name.split("@", 1)[0]
+        return f"/etc/systemd/system/{prefix}@.service"
+    return f"/etc/systemd/system/{name}.service"
+
+
+def _service_instance(service: str) -> str | None:
+    name = service.removesuffix(".service")
+    if "@" not in name:
+        return None
+    return name.split("@", 1)[1]
+
+
+def _is_systemd_unit_path(path: str) -> bool:
+    return re.fullmatch(r"/etc/systemd/system/reef-[A-Za-z0-9_.@-]+\.service", path) is not None
 
 
 def routes_for_node(model: Model, node: Node) -> list[Route]:

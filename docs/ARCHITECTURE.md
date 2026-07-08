@@ -94,7 +94,7 @@ Reef manages only a fixed remote directory and the service files it installs:
 
 `/opt/reef/.managed.json` is a non-secret marker. It records only ownership, version, node identity, managed file lists, and render hashes. It must not contain the root seed, node passwords, subscription tokens, or private keys.
 
-System services are declared by the provider manifest. Ansible installs, starts, restarts, and deletes them.
+System services are declared by the provider manifest. Ansible runs the Reef node apply script, uploads only files that the remote plan reports as missing or drifted, starts or restarts affected services, and deletes managed state through the delete playbook.
 
 ## Test Layout
 

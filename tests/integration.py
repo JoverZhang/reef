@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -19,6 +20,21 @@ IMAGE = f"reef-test-node:{os.getpid()}"
 def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(cmd))
     subprocess.run(cmd, cwd=ROOT, env=env, check=True)
+
+
+def run_output(cmd: list[str], *, env: dict[str, str] | None = None) -> str:
+    print("+", " ".join(cmd))
+    result = subprocess.run(
+        cmd,
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    print(result.stdout, end="")
+    return result.stdout
 
 
 def wait_tcp(port: int, timeout: float = 30) -> None:
@@ -152,6 +168,9 @@ def main() -> int:
         run(["just", "doctor"], env=full_recipe_env)
         run(["just", "plan"], env=full_recipe_env)
         run(["just", "apply"], env=full_recipe_env)
+        noop_apply = run_output(["just", "apply"], env=full_recipe_env)
+        if re.search(r"changed=[1-9]", noop_apply):
+            raise RuntimeError("second apply should not change any node")
         run(["just", "urls"], env=full_recipe_env)
         run(
             [
@@ -163,7 +182,12 @@ def main() -> int:
         )
         run(["just", "smoke"], env=full_recipe_env)
         run(["just", "web-build"], env=full_recipe_env)
-        run(["just", "apply"], env=reduced_recipe_env)
+        reduced_apply = run_output(["just", "apply"], env=reduced_recipe_env)
+        if (
+            "bin/hysteria-linux-amd64" in reduced_apply
+            or "bin/sing-box-linux-amd64" in reduced_apply
+        ):
+            raise RuntimeError("reduced apply should not upload unchanged runtime binaries")
         run(
             [
                 str(ROOT / ".venv" / "bin" / "ansible"),

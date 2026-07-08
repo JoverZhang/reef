@@ -1,131 +1,38 @@
-- name: Check existing Reef marker
-  ansible.builtin.stat:
-    path: "{{ reef_node.remote_dir }}/.managed.json"
-  register: reef_marker_stat
+- name: Check Reef node state
+  ansible.builtin.script:
+    cmd: "reef_node_apply.py check {{ reef_node.desired | to_json | b64encode }}"
+  register: reef_node_check
+  check_mode: false
+  changed_when: (reef_node_check.stdout | trim | from_json).changed
 
-- name: Read existing Reef marker
-  ansible.builtin.slurp:
-    path: "{{ reef_node.remote_dir }}/.managed.json"
-  register: reef_marker_raw
-  when: reef_marker_stat.stat.exists
-
-- name: Parse existing Reef marker
+- name: Store Reef node plan
   ansible.builtin.set_fact:
-    reef_old_marker: "{{ reef_marker_raw.content | b64decode | from_json }}"
-  when: reef_marker_stat.stat.exists
+    reef_node_plan: "{{ reef_node_check.stdout | trim | from_json }}"
 
-- name: Default existing Reef marker
-  ansible.builtin.set_fact:
-    reef_old_marker: {}
-  when: not reef_marker_stat.stat.exists
+- name: End unchanged or check-only Reef node
+  ansible.builtin.meta: end_host
+  when: >
+    ansible_check_mode
+    or reef_node_plan.up_to_date
 
-- name: Refuse conflicting Reef marker
-  ansible.builtin.fail:
-    msg: "refusing to manage non-matching Reef marker on {{ inventory_hostname }}"
-  when:
-    - reef_marker_stat.stat.exists
-    - (reef_old_marker.managedBy | default("")) != "reef" or (reef_old_marker.nodeId | default("")) != inventory_hostname
-
-- name: Refuse unsafe stale Reef service names
-  ansible.builtin.fail:
-    msg: "refusing unsafe stale Reef service name {{ item }} on {{ inventory_hostname }}"
-  loop: "{{ (reef_old_marker.services | default([])) | difference(reef_node.services) }}"
-  when:
-    - reef_marker_stat.stat.exists
-    - item is not match("^reef-[A-Za-z0-9_.@-]+\\.service$")
-
-- name: Stop removed Reef service instances
-  ansible.builtin.systemd:
-    name: "{{ item }}"
-    enabled: false
-    state: stopped
-  loop: "{{ (reef_old_marker.services | default([])) | difference(reef_node.services) }}"
-  when:
-    - reef_marker_stat.stat.exists
-    - not ansible_check_mode
-  failed_when: false
-
-- name: Refuse unsafe stale Reef managed file paths
-  ansible.builtin.fail:
-    msg: "refusing unsafe stale Reef managed file path {{ item }} on {{ inventory_hostname }}"
-  loop: "{{ (reef_old_marker.files | default([])) | difference(reef_node.files | map(attribute='dest') | list) }}"
-  when:
-    - reef_marker_stat.stat.exists
-    - item is not match("^" ~ (reef_node.remote_dir | regex_escape) ~ "(/|$)")
-    - item is not match("^/etc/systemd/system/reef-[A-Za-z0-9_.@-]+\\.service$")
-
-- name: Remove stale Reef managed files
+- name: Create Reef node staging directory
   ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop: "{{ (reef_old_marker.files | default([])) | difference(reef_node.files | map(attribute='dest') | list) }}"
-  when: reef_marker_stat.stat.exists
-
-- name: Collect stale Reef runtime paths
-  ansible.builtin.set_fact:
-    reef_stale_runtime_paths: >-
-      {{
-        (
-          (reef_old_marker.runtimes | default([]) | map(attribute='dest') | list)
-          + ([reef_old_marker.runtime.dest] if (reef_old_marker.runtime is defined and reef_old_marker.runtime.dest is defined) else [])
-        )
-        | unique
-        | difference(reef_node.runtimes | default([]) | map(attribute='dest') | list)
-      }}
-  when: reef_marker_stat.stat.exists
-
-- name: Refuse unsafe stale Reef runtime paths
-  ansible.builtin.fail:
-    msg: "refusing unsafe stale Reef runtime path {{ item }} on {{ inventory_hostname }}"
-  loop: "{{ reef_stale_runtime_paths | default([]) }}"
-  when:
-    - reef_marker_stat.stat.exists
-    - item is not match("^" ~ (reef_node.remote_dir | regex_escape) ~ "(/|$)")
-
-- name: Remove stale Reef runtime files
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop: "{{ reef_stale_runtime_paths | default([]) }}"
-  when: reef_marker_stat.stat.exists
-
-- name: Create Reef directories
-  ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ reef_node.stage_dir }}"
     state: directory
-    mode: "0755"
-  loop:
-    - "{{ reef_node.remote_dir }}"
-    - "{{ reef_node.remote_dir }}/bin"
-    - "{{ reef_node.remote_dir }}/certs"
-    - "{{ reef_node.remote_dir }}/config"
+    mode: "0700"
+  when: reef_node_plan.uploads | length > 0
 
-- name: Install transport binaries
+- name: Upload changed Reef node items
   ansible.builtin.copy:
     src: "{{ item.src }}"
-    dest: "{{ item.dest }}"
-    mode: "0755"
-  loop: "{{ reef_node.runtimes }}"
+    dest: "{{ reef_node.stage_dir }}/{{ item.id }}"
+    mode: "0600"
+  loop: "{{ reef_node.deploy_items | selectattr('id', 'in', reef_node_plan.uploads) | list }}"
+  when: reef_node_plan.uploads | length > 0
   diff: false
-  notify: restart reef services
 
-- name: Install Reef rendered files
-  ansible.builtin.copy:
-    src: "{{ item.src }}"
-    dest: "{{ item.dest }}"
-    mode: "{{ item.mode }}"
-  loop: "{{ reef_node.files }}"
-  diff: false
-  notify: restart reef services
-
-- name: Reload systemd
-  ansible.builtin.systemd:
-    daemon_reload: true
-
-- name: Enable and start Reef services
-  ansible.builtin.systemd:
-    name: "{{ item }}"
-    enabled: true
-    state: started
-  loop: "{{ reef_node.services }}"
-  when: not ansible_check_mode
+- name: Apply Reef node plan
+  ansible.builtin.script:
+    cmd: "reef_node_apply.py apply {{ reef_node.desired | to_json | b64encode }} {{ reef_node.stage_dir }}"
+  register: reef_node_apply
+  changed_when: (reef_node_apply.stdout | trim | from_json).changed
