@@ -271,7 +271,7 @@ The subscription renderer receives the derived route model and the loaded provid
 
 ### Website Deployment
 
-The website deployment workflow is manual. It is triggered with GitHub Actions `workflow_dispatch` and deploys the Vercel project from the repository root so Vercel can apply the Web app root directory setting.
+The website deployment workflow runs after changes land on `master`. It can also be triggered manually with GitHub Actions `workflow_dispatch`. It deploys the Vercel project from the repository root so Vercel can apply the Web app root directory setting.
 
 Required GitHub Secrets:
 
