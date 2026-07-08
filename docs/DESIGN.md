@@ -183,6 +183,7 @@ TLS certificates must be deterministic:
 
 - one certificate per node
 - P-256 ECDSA key and SHA-256 signature
+- deterministic certificate signature
 - SAN contains the node IP
 - serial number is derived, not random
 - validity window is fixed, not based on current time
