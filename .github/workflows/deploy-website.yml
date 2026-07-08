@@ -1,6 +1,9 @@
 name: Deploy Website
 
 on:
+  push:
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
@@ -55,7 +58,7 @@ jobs:
           fi
 
       - name: Install Vercel CLI
-        run: npm install --global vercel@latest
+        run: npm install --global vercel@54.21.0
 
       - name: Pull Vercel project
         run: vercel pull --yes --environment=production
