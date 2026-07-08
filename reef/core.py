@@ -327,7 +327,7 @@ def derive_node_secret(secret: bytes, node: Node) -> NodeSecret:
             x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(node.ip))]),
             critical=False,
         )
-        .sign(key, algorithm=hashes.SHA256())
+        .sign(key, algorithm=hashes.SHA256(), ecdsa_deterministic=True)
     )
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     key_pem = key.private_bytes(
