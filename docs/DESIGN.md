@@ -273,6 +273,8 @@ The subscription renderer receives the derived route model and the loaded provid
 
 The website deployment workflow runs after changes land on `master`. It can also be triggered manually with GitHub Actions `workflow_dispatch`. It deploys the Vercel project from the repository root so Vercel can apply the Web app root directory setting.
 
+The workflow sets Vercel CLI deployment author email metadata from `VERCEL_GIT_AUTHOR_EMAIL` so Vercel team access checks do not depend on the merge commit author.
+
 Required GitHub Secrets:
 
 ```text
@@ -280,6 +282,7 @@ REEF_WEB_ENV
 VERCEL_TOKEN
 VERCEL_ORG_ID
 VERCEL_PROJECT_ID
+VERCEL_GIT_AUTHOR_EMAIL
 ```
 
 `REEF_WEB_ENV` is a multiline `.env` payload for the subscription website. It must include the root seed and public topology values. It must not include `REEF_SSH_PRIVATE_KEY_B64` or test-only variables.
