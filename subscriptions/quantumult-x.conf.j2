@@ -15,17 +15,19 @@ doh-server=https://223.5.5.5/dns-query, https://doh.pub/dns-query
 trojan={{ pair.server_host }}:{{ pair.server_port }}, password={{ pair.password }}, over-tls=true, tls-host={{ pair.sni }}, tls-verification=true, tls-cert-sha256={{ pair.cert_fingerprint_hex }}, fast-open=false, udp-relay=false, tag={{ pair.name }}
 {%- endfor %}
 
+[server_remote]
+
 [policy]
-static=PROXY{% for group in qx_exit_groups %}, {{ group.name }}{% endfor %}
+static=Reef{% for group in qx_exit_groups %}, {{ group.name }}{% endfor %}
 {% for group in qx_exit_groups %}
 url-latency-benchmark={{ group.name }}{% for proxy in group.proxies %}, {{ proxy }}{% endfor %}, check-interval=300, tolerance=0
 {%- endfor %}
 
 [filter_remote]
-https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/OpenAI/OpenAI.list, tag=bm_openai, force-policy=PROXY, enabled=true
-https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/Claude/Claude.list, tag=bm_claude, force-policy=PROXY, enabled=true
-https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/Gemini/Gemini.list, tag=bm_gemini, force-policy=PROXY, enabled=true
-https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/Proxy/Proxy.list, tag=bm_proxy, force-policy=PROXY, enabled=true
+https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/OpenAI/OpenAI.list, tag=bm_openai, force-policy=Reef, enabled=true
+https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/Claude/Claude.list, tag=bm_claude, force-policy=Reef, enabled=true
+https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/Gemini/Gemini.list, tag=bm_gemini, force-policy=Reef, enabled=true
+https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/Proxy/Proxy.list, tag=bm_proxy, force-policy=Reef, enabled=true
 https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/ChinaMax/ChinaMax.list, tag=bm_china, force-policy=direct, enabled=true
 
 [filter_local]
@@ -33,4 +35,10 @@ https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Quant
 {{ rule }}
 {%- endfor %}
 geoip, cn, direct
-final, PROXY
+final, Reef
+
+[rewrite_remote]
+
+[rewrite_local]
+
+[mitm]
