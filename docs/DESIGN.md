@@ -182,10 +182,15 @@ Derived material includes:
 TLS certificates must be deterministic:
 
 - one certificate per node
+- P-256 ECDSA key and SHA-256 signature
 - SAN contains the node IP
 - serial number is derived, not random
 - validity window is fixed, not based on current time
 - fingerprint is derived from the rendered certificate
+
+P-256 is used for broad TLS client compatibility. The private scalar is derived
+from `REEF_SECRET` with HKDF and reduced into the P-256 scalar range; Reef does
+not generate or store mutable TLS key state.
 
 ### Provider Boundary
 

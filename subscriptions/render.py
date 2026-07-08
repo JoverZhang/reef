@@ -11,6 +11,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 SUBSCRIPTIONS_DIR = Path(__file__).resolve().parent
 REQUIRED_CONTEXT = {"provider_ids", "profiles", "routes", "exits"}
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+QX_TAG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 PROVIDER_TRANSPORTS = {
     "hysteria2": {
         "transport": "hysteria2",
@@ -154,7 +155,7 @@ def _quantumult_x_pairs(context: dict[str, Any]) -> list[dict[str, Any]]:
                     route,
                     provider_id=provider_id,
                     transport=str(spec["transport"]),
-                    name=route["name"],
+                    name=route["id"],
                 )
             )
     return pairs
@@ -272,6 +273,8 @@ def _check_quantumult_x(body: str, pairs: list[dict[str, Any]], exits: list[str]
     server_lines = [line for line in lines if line.startswith("trojan=")]
     _expect(len(server_lines), len(pairs), "quantumult-x trojan count mismatch")
     for line, pair in zip(server_lines, pairs, strict=True):
+        if not QX_TAG_RE.match(pair["name"]):
+            raise ValueError(f"quantumult-x invalid tag for {pair['name']}")
         if f"tag={pair['name']}" not in line:
             raise ValueError(f"quantumult-x missing tag for {pair['name']}")
         if f"password={pair['password']}" not in line:
