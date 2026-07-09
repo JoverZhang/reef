@@ -9,7 +9,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 
 SUBSCRIPTIONS_DIR = Path(__file__).resolve().parent
-REQUIRED_CONTEXT = {"provider_ids", "profiles", "routes", "exits"}
+REQUIRED_CONTEXT = {"provider_ids", "profiles", "routes", "entries", "exits"}
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 QX_TAG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 PROVIDER_TRANSPORTS = {
@@ -38,6 +38,10 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
     qx_pairs = proxy_metadata(context, profile_id="quantumult-x")
     exit_groups = _exit_groups(context["exits"], pairs)
     qx_exit_groups = _exit_groups(context["exits"], qx_pairs)
+    entry_groups = _entry_groups(context["entries"], pairs)
+    qx_entry_groups = _entry_groups(context["entries"], qx_pairs)
+    entry_override_rules = _entry_override_rules(entry_groups)
+    qx_entry_override_rules = _qx_entry_override_rules(qx_entry_groups)
     entry_direct_rules = [
         f"IP-CIDR,{server}/32,DIRECT,no-resolve"
         for server in sorted({pair["server_host"] for pair in pairs})
@@ -57,6 +61,10 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
                 "qx_pairs": qx_pairs,
                 "exit_groups": exit_groups,
                 "qx_exit_groups": qx_exit_groups,
+                "entry_groups": entry_groups,
+                "qx_entry_groups": qx_entry_groups,
+                "entry_override_rules": entry_override_rules,
+                "qx_entry_override_rules": qx_entry_override_rules,
                 "entry_direct_rules": entry_direct_rules,
                 "qx_entry_direct_rules": qx_entry_direct_rules,
                 "mixed_port": int(profile.get("mixed_port", 7890)),
@@ -80,14 +88,24 @@ def validate(profiles: list[dict[str, str]], context: dict[str, Any]) -> None:
     pairs = proxy_metadata(context, profile_id="client")
     qx_pairs = proxy_metadata(context, profile_id="quantumult-x")
     route_names_by_exit = _route_names_by_exit(expected_exits, pairs)
+    entry_groups = _entry_groups(context["entries"], pairs)
+    qx_entry_groups = _entry_groups(context["entries"], qx_pairs)
 
     client = yaml.safe_load(by_id["client"]["body"])
     _expect(len(client["proxies"]), len(pairs), "client proxy count mismatch")
     _check_mihomo_proxy_shape(client, [pair["name"] for pair in pairs])
     _check_groups(client, expected_exits, route_names_by_exit, "client.yaml")
+    _check_entry_groups(client, entry_groups, "client.yaml")
+    expected_entry_rules = _entry_override_rules(entry_groups)
     expected_direct_rules = _direct_rules(pairs)
     _expect(
-        client["rules"][: len(expected_direct_rules)],
+        client["rules"][: len(expected_entry_rules)],
+        expected_entry_rules,
+        "client entry override rules mismatch",
+    )
+    direct_start = len(expected_entry_rules)
+    _expect(
+        client["rules"][direct_start : direct_start + len(expected_direct_rules)],
         expected_direct_rules,
         "client direct rules mismatch",
     )
@@ -97,7 +115,12 @@ def validate(profiles: list[dict[str, str]], context: dict[str, Any]) -> None:
     _check_mihomo_proxy_shape(linux, [pair["name"] for pair in pairs])
     _check_groups(linux, expected_exits, route_names_by_exit, "linux-server.yaml")
 
-    _check_quantumult_x(by_id["quantumult-x"]["body"], qx_pairs, expected_exits)
+    _check_quantumult_x(
+        by_id["quantumult-x"]["body"],
+        qx_pairs,
+        expected_exits,
+        qx_entry_groups,
+    )
 
 
 def _require_context(context: dict[str, Any]) -> None:
@@ -179,6 +202,12 @@ def _pair(
         "transport": transport,
         "exit_name": route["exit"]["id"],
         "exit_id": route["exit"]["id"],
+        "entry_name": route["entry"]["id"] if route["entry"] else None,
+        "entry_id": route["entry"]["id"] if route["entry"] else None,
+        "entry_override_host": (
+            route["entry"]["entry_override_host"] if route["entry"] else None
+        ),
+        "kind": route["kind"],
         "expected_exit_ip": route["exit"]["ip"],
         "server_host": connect["host"],
         "server_port": connect["port"],
@@ -198,6 +227,28 @@ def _exit_groups(exits: list[dict[str, Any]], pairs: list[dict[str, Any]]) -> li
         }
         for exit_node in exits
     ]
+
+
+def _entry_groups(entries: list[dict[str, Any]], pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups = []
+    for entry in entries:
+        host = entry.get("entry_override_host")
+        if not host:
+            continue
+        groups.append(
+            {
+                "name": f"entry-{entry['id']}",
+                "entry_name": entry["id"],
+                "entry_id": entry["id"],
+                "host": host,
+                "proxies": [
+                    pair["name"]
+                    for pair in pairs
+                    if pair["kind"] == "relay" and pair["entry_id"] == entry["id"]
+                ],
+            }
+        )
+    return groups
 
 
 def _route_names_by_exit(
@@ -224,6 +275,14 @@ def _direct_rules(pairs: list[dict[str, Any]]) -> list[str]:
         f"IP-CIDR,{server}/32,DIRECT,no-resolve"
         for server in sorted({pair["server_host"] for pair in pairs})
     ]
+
+
+def _entry_override_rules(entry_groups: list[dict[str, Any]]) -> list[str]:
+    return [f"DOMAIN,{group['host']},{group['name']}" for group in entry_groups]
+
+
+def _qx_entry_override_rules(entry_groups: list[dict[str, Any]]) -> list[str]:
+    return [f"host, {group['host']}, {group['name']}" for group in entry_groups]
 
 
 def _check_mihomo_proxy_shape(doc: dict[str, Any], expected_names: list[str]) -> None:
@@ -253,7 +312,29 @@ def _check_groups(
         )
 
 
-def _check_quantumult_x(body: str, pairs: list[dict[str, Any]], exits: list[str]) -> None:
+def _check_entry_groups(
+    doc: dict[str, Any],
+    entry_groups: list[dict[str, Any]],
+    label: str,
+) -> None:
+    groups = _group_by_name(doc)
+    for entry_group in entry_groups:
+        group = groups.get(entry_group["name"])
+        if not group:
+            raise ValueError(f"{label} missing {entry_group['name']} group")
+        _expect(
+            group["proxies"],
+            entry_group["proxies"],
+            f"{label} {entry_group['name']} routes mismatch",
+        )
+
+
+def _check_quantumult_x(
+    body: str,
+    pairs: list[dict[str, Any]],
+    exits: list[str],
+    entry_groups: list[dict[str, Any]],
+) -> None:
     lines = [line.strip() for line in body.splitlines() if line.strip()]
     required_sections = {
         "[general]",
@@ -291,7 +372,11 @@ def _check_quantumult_x(body: str, pairs: list[dict[str, Any]], exits: list[str]
         raise ValueError("quantumult-x missing Reef policy")
 
     policy_lines = [line for line in lines if line.startswith("url-latency-benchmark=")]
-    _expect(len(policy_lines), len(exits), "quantumult-x exit policy count mismatch")
+    _expect(
+        len(policy_lines),
+        len(exits) + len(entry_groups),
+        "quantumult-x policy count mismatch",
+    )
     for exit_name in exits:
         expected = [pair["name"] for pair in pairs if pair["exit_name"] == exit_name]
         matching = [
@@ -306,6 +391,28 @@ def _check_quantumult_x(body: str, pairs: list[dict[str, Any]], exits: list[str]
         for proxy_name in expected:
             if proxy_name not in matching[0]:
                 raise ValueError(f"quantumult-x {exit_name} policy missing {proxy_name}")
+
+    for entry_group in entry_groups:
+        matching = [
+            line
+            for line in policy_lines
+            if line.startswith(f"url-latency-benchmark={entry_group['name']},")
+        ]
+        if len(matching) != 1:
+            raise ValueError(f"quantumult-x missing policy for {entry_group['name']}")
+        for proxy_name in entry_group["proxies"]:
+            if proxy_name not in matching[0]:
+                raise ValueError(
+                    f"quantumult-x {entry_group['name']} policy missing {proxy_name}"
+                )
+
+    entry_rules = _qx_entry_override_rules(entry_groups)
+    filter_start = lines.index("[filter_local]") + 1
+    _expect(
+        lines[filter_start : filter_start + len(entry_rules)],
+        entry_rules,
+        "quantumult-x entry override rules mismatch",
+    )
 
     if "final, Reef" not in lines:
         raise ValueError("quantumult-x final rule must use Reef policy")

@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE_DIR = "/opt/reef"
 SECRET_RE = re.compile(r"^[0-9a-f]{64}$")
 NODE_RE = re.compile(r"^REEF_(ENTRY|EXIT)_(\d+)$")
+ENTRY_OVERRIDE_ADDRESS = "127.0.0.1"
 # NIST P-256 group order. cryptography exposes SECP256R1(), but not the scalar
 # field order needed to derive a deterministic private key from REEF_SECRET.
 P256_ORDER = int("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
@@ -66,6 +67,7 @@ class Config:
     exit_port: int
     ssh_private_key_b64: str | None
     smoke_url: str
+    entry_override_base_domain: str | None
 
 
 @dataclass(frozen=True)
@@ -161,6 +163,13 @@ def parse_config(values: dict[str, str], *, require_ssh: bool = False) -> Config
     if ssh_key:
         _decode_private_key(ssh_key)
 
+    entry_override_base_domain = _parse_optional_domain(
+        values.get("REEF_ENTRY_OVERRIDE_BASE_DOMAIN", ""),
+        "REEF_ENTRY_OVERRIDE_BASE_DOMAIN",
+    )
+    if entry_override_base_domain and not entries:
+        raise ValueError("REEF_ENTRY_OVERRIDE_BASE_DOMAIN requires at least one REEF_ENTRY_N")
+
     return Config(
         secret_hex=secret,
         entries=entries,
@@ -169,6 +178,7 @@ def parse_config(values: dict[str, str], *, require_ssh: bool = False) -> Config
         exit_port=exit_port,
         ssh_private_key_b64=ssh_key,
         smoke_url="https://api.ipify.org",
+        entry_override_base_domain=entry_override_base_domain,
     )
 
 
@@ -209,6 +219,26 @@ def _parse_port(value: str, name: str) -> int:
     if not 1 <= port <= 65535:
         raise ValueError(f"{name} must be between 1 and 65535")
     return port
+
+
+def _parse_optional_domain(value: str, name: str) -> str | None:
+    domain = value.strip().lower()
+    if not domain:
+        return None
+    labels = domain.split(".")
+    if len(labels) < 2 or len(domain) > 253:
+        raise ValueError(f"{name} must be a domain name like example.com")
+    for label in labels:
+        if (
+            not 1 <= len(label) <= 63
+            or label.startswith("-")
+            or label.endswith("-")
+            or not re.match(r"^[a-z0-9-]+$", label)
+        ):
+            raise ValueError(f"{name} must be a domain name like example.com")
+    if labels[-1].isdigit():
+        raise ValueError(f"{name} must be a domain name like example.com")
+    return domain
 
 
 def _decode_private_key(value: str) -> bytes:
@@ -823,7 +853,9 @@ def subscription_context(model: Model, host_map: dict[str, Any] | None = None) -
         "provider_ids": [str(provider["id"]) for provider in model.providers],
         "profiles": load_subscription_profiles(),
         "routes": routes,
+        "entries": [_node_dict(node, model) for node in model.config.entries],
         "exits": [_node_dict(node, model) for node in model.config.exits],
+        "entry_override_base_domain": model.config.entry_override_base_domain,
     }
 
 
@@ -964,6 +996,11 @@ def _node_dict(node: Node | None, model: Model) -> dict[str, Any] | None:
     if node is None:
         return None
     secret = model.secrets[node.id]
+    entry_override_host = None
+    entry_override_address = None
+    if node.role == "entry" and model.config.entry_override_base_domain:
+        entry_override_host = f"{node.id}.{model.config.entry_override_base_domain}"
+        entry_override_address = ENTRY_OVERRIDE_ADDRESS
     return {
         "id": node.id,
         "ip": node.ip,
@@ -971,6 +1008,8 @@ def _node_dict(node: Node | None, model: Model) -> dict[str, Any] | None:
         "role": node.role,
         "password": secret.password,
         "fingerprint": secret.fingerprint,
+        "entry_override_host": entry_override_host,
+        "entry_override_address": entry_override_address,
     }
 
 

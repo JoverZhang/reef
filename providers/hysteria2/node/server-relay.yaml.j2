@@ -14,10 +14,17 @@ trafficStats:
   secret: "{{ route.stats_secret }}"
 
 outbounds:
-  - name: local-client
+  - name: {% if route.entry.entry_override_host %}local_client{% else %}local-client{% endif %}
     type: socks5
     socks5:
       addr: 127.0.0.1:{{ route.socks_port }}
+
+{% if route.entry.entry_override_host -%}
+acl:
+  inline:
+    - direct({{ route.entry.entry_override_host }}, *, {{ route.entry.entry_override_address }})
+    - local_client(all)
+{% endif -%}
 
 masquerade:
   type: proxy

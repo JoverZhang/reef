@@ -96,7 +96,7 @@ def main() -> int:
     doc["external-controller"] = f"127.0.0.1:{api_port}"
     doc["secret"] = API_SECRET
     doc.pop("rule-providers", None)
-    doc["rules"] = ["MATCH,PROXY"]
+    doc["rules"] = _entry_override_rules_for_smoke(doc) + ["MATCH,PROXY"]
     if isinstance(doc.get("dns"), dict):
         doc["dns"].pop("nameserver-policy", None)
     for group in doc.get("proxy-groups", []):
@@ -155,6 +155,7 @@ def main() -> int:
             observed = curl_through(mixed_port, smoke_url)
             if observed != expected:
                 raise RuntimeError(f"{name}: expected {expected}, got {observed!r}")
+        _smoke_entry_overrides(model, smoke_metadata, api_base, mixed_port)
         return 0
     finally:
         proc.terminate()
@@ -173,6 +174,44 @@ def _smoke_config(model) -> dict:
         if isinstance(smoke_config, dict) and smoke_config.get("client_path"):
             return smoke_config
     raise SystemExit("a provider must declare smoke.client_path")
+
+
+def _entry_override_rules_for_smoke(doc: dict) -> list[str]:
+    rules = []
+    for rule in doc.get("rules", []):
+        if not isinstance(rule, str):
+            continue
+        parts = [part.strip() for part in rule.split(",")]
+        if len(parts) >= 3 and parts[-1].startswith("entry-"):
+            rules.append(rule)
+    return rules
+
+
+def _smoke_entry_overrides(model, smoke_metadata, api_base: str, mixed_port: int) -> None:
+    echo_port = os.environ.get("TEST_ENTRY_OVERRIDE_ECHO_PORT")
+    if not echo_port:
+        return
+    _require_test_mode("TEST_ENTRY_OVERRIDE_ECHO_PORT")
+    if not model.config.entry_override_base_domain:
+        return
+
+    for entry in model.config.entries:
+        host = f"{entry.id}.{model.config.entry_override_base_domain}"
+        group = f"entry-{entry.id}"
+        proxy_names = [
+            item["name"]
+            for item in smoke_metadata
+            if item.get("kind") == "relay" and item.get("entry_id") == entry.id
+        ]
+        if not proxy_names:
+            raise RuntimeError(f"{entry.id}: missing entry override proxies")
+        for proxy_name in proxy_names:
+            print(f"smoke {host} via {proxy_name} -> expect {entry.id}")
+            api_put(api_base, group, proxy_name)
+            time.sleep(0.2)
+            observed = curl_through(mixed_port, f"http://{host}:{int(echo_port)}")
+            if observed != entry.id:
+                raise RuntimeError(f"{host}: expected {entry.id}, got {observed!r}")
 
 
 if __name__ == "__main__":

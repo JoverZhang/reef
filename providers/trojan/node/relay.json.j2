@@ -34,5 +34,26 @@
         "certificate_path": "{{ route.exit_ca_path }}"
       }
     }
+{% if route.entry.entry_override_host -%}
+    ,
+    {
+      "type": "direct",
+      "tag": "entry-override"
+    }
+{% endif -%}
   ]
+{% if route.entry.entry_override_host -%}
+  ,
+  "route": {
+    "rules": [
+      {
+        "domain": "{{ route.entry.entry_override_host }}",
+        "action": "route",
+        "outbound": "entry-override",
+        "override_address": "{{ route.entry.entry_override_address }}"
+      }
+    ],
+    "final": "exit"
+  }
+{% endif -%}
 }

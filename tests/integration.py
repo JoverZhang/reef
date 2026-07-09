@@ -28,13 +28,35 @@ def run_output(cmd: list[str], *, env: dict[str, str] | None = None) -> str:
         cmd,
         cwd=ROOT,
         env=env,
-        check=True,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
     print(result.stdout, end="")
+    result.check_returncode()
     return result.stdout
+
+
+def run_expect_failure(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    expected: str,
+) -> None:
+    print("+", " ".join(cmd))
+    result = subprocess.run(
+        cmd,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    print(result.stdout, end="")
+    if result.returncode == 0:
+        raise RuntimeError("command should have failed")
+    if expected not in result.stdout:
+        raise RuntimeError(f"expected failure output to contain {expected!r}")
 
 
 def wait_tcp(port: int, timeout: float = 30) -> None:
@@ -75,6 +97,7 @@ def write_env(
         f"REEF_SSH_PRIVATE_KEY_B64={key_b64}",
         "REEF_ENTRY_PORT_BASE=20000",
         "REEF_EXIT_PORT=443",
+        "REEF_ENTRY_OVERRIDE_BASE_DOMAIN=example.test",
         "REEF_ENTRY_1=sg,172.28.0.10",
         "REEF_ENTRY_2=jp,172.28.0.11",
         "REEF_EXIT_1=us,172.28.0.20",
@@ -127,11 +150,81 @@ def recipe_env(env_path: Path, ssh_map: Path, host_map: Path) -> dict[str, str]:
             "TEST_SSH_MAP": str(ssh_map),
             "TEST_HOST_MAP": str(host_map),
             "TEST_SMOKE_URL": "http://172.28.0.30:8080/ip",
+            "TEST_ENTRY_OVERRIDE_ECHO_PORT": "18080",
             "TEST_DISABLE_SSH_HOST_KEY_CHECK": "1",
             "CI": "1",
         }
     )
     return env
+
+
+def write_no_entry_override_env() -> Path:
+    env_path = BUILD / ".env.no-entry-override"
+    env_path.write_text(
+        "\n".join(
+            [
+                "REEF_SECRET=1111111111111111111111111111111111111111111111111111111111111111",
+                "REEF_ENTRY_OVERRIDE_BASE_DOMAIN=example.test",
+                "REEF_EXIT_1=us,172.28.0.20",
+            ]
+        )
+        + "\n"
+    )
+    env_path.chmod(0o600)
+    return env_path
+
+
+def start_entry_override_echo(env: dict[str, str]) -> None:
+    script = r"""set -eu
+cat > /tmp/reef_entry_override_echo.py <<'PY'
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import sys
+
+entry_id = sys.argv[1]
+port = int(sys.argv[2])
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = f"{entry_id}\n".encode()
+        self.send_response(200)
+        self.send_header("content-type", "text/plain")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+class Server(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
+Server(("127.0.0.1", port), Handler).serve_forever()
+PY
+if [ -f /tmp/reef_entry_override_echo.pid ]; then
+  kill "$(cat /tmp/reef_entry_override_echo.pid)" 2>/dev/null || true
+fi
+nohup python3 /tmp/reef_entry_override_echo.py __ENTRY_ID__ 18080 >/tmp/reef_entry_override_echo.log 2>&1 &
+echo "$!" >/tmp/reef_entry_override_echo.pid
+"""
+    ansible = ROOT / ".venv" / "bin" / "ansible"
+    inventory = ROOT / "build" / "ansible" / "inventory.yml"
+    for entry_id in ["sg", "jp"]:
+        run(
+            [
+                str(ansible),
+                entry_id,
+                "-i",
+                str(inventory),
+                "-m",
+                "shell",
+                "-a",
+                script.replace("__ENTRY_ID__", entry_id),
+            ],
+            env=env,
+        )
 
 
 def main() -> int:
@@ -140,6 +233,18 @@ def main() -> int:
     ctx, key_b64 = write_context()
     env_path, ssh_map, host_map = write_env(key_b64)
     reduced_env_path, _, _ = write_env(key_b64, name=".env.reduced", include_uk=False)
+    no_entry_env_path = write_no_entry_override_env()
+    no_entry_env = recipe_env(no_entry_env_path, ssh_map, host_map)
+    run_expect_failure(
+        [
+            str(ROOT / ".venv" / "bin" / "python"),
+            "-m",
+            "reef.cli.render",
+            "subscriptions",
+        ],
+        env=no_entry_env,
+        expected="REEF_ENTRY_OVERRIDE_BASE_DOMAIN requires at least one REEF_ENTRY_N",
+    )
     run(
         [
             "docker",
@@ -180,6 +285,7 @@ def main() -> int:
             ],
             env=full_recipe_env,
         )
+        start_entry_override_echo(full_recipe_env)
         run(["just", "smoke"], env=full_recipe_env)
         run(["just", "web-build"], env=full_recipe_env)
         reduced_apply = run_output(["just", "apply"], env=reduced_recipe_env)

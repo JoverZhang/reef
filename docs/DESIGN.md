@@ -67,6 +67,7 @@ REEF_SSH_PRIVATE_KEY_B64=<base64-encoded OpenSSH private key>
 
 REEF_ENTRY_PORT_BASE=20000
 REEF_EXIT_PORT=443
+REEF_ENTRY_OVERRIDE_BASE_DOMAIN=example.com
 
 REEF_ENTRY_1=sg,1.2.3.4
 REEF_ENTRY_2=jp,2.3.4.5
@@ -84,6 +85,8 @@ Rules:
 - Node names are stable identities. Changing a node name creates a different node identity.
 - First phase supports a global SSH key only.
 - First phase supports all entries connected to all exits.
+- `REEF_ENTRY_OVERRIDE_BASE_DOMAIN` is optional. When set, at least one entry is required.
+- `REEF_ENTRY_OVERRIDE_BASE_DOMAIN` is a base domain only. It must not include a scheme, path, wildcard, or trailing dot.
 
 ### Derived Model
 
@@ -93,6 +96,7 @@ Reef derives:
 - exits: every `REEF_EXIT_N`
 - relay routes: every entry paired with every exit
 - direct routes: every exit
+- entry override hosts: `<entry-name>.<REEF_ENTRY_OVERRIDE_BASE_DOMAIN>` when the base domain is set
 
 For `M` entries and `N` exits:
 
@@ -121,6 +125,18 @@ jp -> uk
 us direct
 uk direct
 ```
+
+When `REEF_ENTRY_OVERRIDE_BASE_DOMAIN=example.com`, the same entries also derive:
+
+```text
+sg.example.com
+jp.example.com
+```
+
+Generated Mihomo and Quantumult X subscriptions route each derived host only to
+relay routes for the matching entry. They do not fall back to other entries or
+direct exit routes. On the matching entry node, the destination address is
+overridden to `127.0.0.1`; the original destination port is preserved.
 
 ### Ports
 
