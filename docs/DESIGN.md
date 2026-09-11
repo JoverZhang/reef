@@ -15,6 +15,7 @@ just smoke
 just delete
 just test
 just urls
+just reef-web-env
 just web-build
 just web-dev
 ```
@@ -31,6 +32,7 @@ Their purpose:
 - `delete`: remove Reef-managed remote services and files. It asks for confirmation in an interactive shell and skips confirmation when `CI=1`.
 - `test`: run the local integration test matrix.
 - `urls`: render subscription artifacts and print path-only subscription URLs.
+- `reef-web-env`: print the effective website configuration as a multiline `.env` payload for `REEF_WEB_ENV`, without modifying files or uploading secrets. Refuse to output in CI because the payload includes the root seed.
 - `web-build`: install Web dependencies and run a production build.
 - `web-dev`: render Web artifacts, install Web dependencies, and start the local development server.
 
@@ -305,3 +307,10 @@ VERCEL_PROJECT_ID
 ```
 
 `REEF_WEB_ENV` is a multiline `.env` payload for the subscription website. It must include the root seed and public topology values. It must not include `REEF_SSH_PRIVATE_KEY_B64` or test-only variables.
+
+Run `just reef-web-env` to generate this payload. It reads `.env` (or
+`REEF_ENV_FILE`) with environment variables taking precedence, validates the
+website configuration, and outputs only `REEF_SECRET`, both port settings
+(including defaults), the optional entry override base domain, and all
+`REEF_ENTRY_N` / `REEF_EXIT_N` nodes. Copy the output into the GitHub Secret
+`REEF_WEB_ENV`, then run the website deployment workflow to publish changes.

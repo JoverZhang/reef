@@ -43,6 +43,9 @@ urls: setup
     {{python}} -m reef.cli.render subscriptions web
     {{python}} -m reef.cli.urls
 
+reef-web-env: setup
+    {{python}} -m reef.cli.reef_web_env
+
 web-build: setup
     cd web && pnpm install --frozen-lockfile
     cd web && pnpm build
