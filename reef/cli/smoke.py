@@ -9,7 +9,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
 import yaml
 
@@ -86,6 +85,8 @@ def curl_through(proxy_port: int, url: str) -> str:
 
 def main() -> int:
     model = load_model()
+    if not model.routes:
+        raise SystemExit("smoke requires a Reef cluster")
     profiles = render_subscriptions(model, _env_path("TEST_HOST_MAP"))
     client = next(p for p in profiles if p["id"] == "client")
     doc = yaml.safe_load(client["body"])
@@ -132,25 +133,16 @@ def main() -> int:
             _env_path("TEST_HOST_MAP"),
             profile_id="client",
         )
-        expected_by_name = {
-            item["name"]: item["expected_exit_ip"] for item in smoke_metadata
-        }
-        exit_by_name = {item["name"]: item["exit_id"] for item in smoke_metadata}
         smoke_url = os.environ.get("TEST_SMOKE_URL")
         if smoke_url:
             _require_test_mode("TEST_SMOKE_URL")
         else:
             smoke_url = model.config.smoke_url
-        for proxy in doc["proxies"]:
+        for proxy in smoke_metadata:
             name = proxy["name"]
-            if name not in expected_by_name:
-                raise RuntimeError(f"{name}: missing subscription smoke metadata")
-            expected = expected_by_name[name]
-            exit_group = exit_by_name[name]
+            expected = proxy["expected_exit_ip"]
             print(f"smoke {name} -> expect {expected}")
-            api_put(api_base, exit_group, name)
-            time.sleep(0.2)
-            api_put(api_base, "PROXY", exit_group)
+            api_put(api_base, "PROXY", name)
             time.sleep(0.2)
             observed = curl_through(mixed_port, smoke_url)
             if observed != expected:

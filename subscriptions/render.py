@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,9 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 
 SUBSCRIPTIONS_DIR = Path(__file__).resolve().parent
-REQUIRED_CONTEXT = {"provider_ids", "profiles", "routes", "entries", "exits"}
+REQUIRED_CONTEXT = {
+    "provider_ids", "profiles", "routes", "entries", "exits", "upstream_proxies", "qx_upstream",
+}
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 QX_TAG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 PROVIDER_TRANSPORTS = {
@@ -34,10 +37,30 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
         keep_trailing_newline=True,
         autoescape=False,
     )
+    # YAML readers do not combine JSON surrogate escapes used for emoji names.
+    env.policies["json.dumps_kwargs"] = {"ensure_ascii": False, "sort_keys": True}
     pairs = proxy_metadata(context, profile_id="client")
     qx_pairs = proxy_metadata(context, profile_id="quantumult-x")
-    exit_groups = _exit_groups(context["exits"], pairs)
-    qx_exit_groups = _exit_groups(context["exits"], qx_pairs)
+    upstream = context["upstream_proxies"]
+    qx_upstream = context["qx_upstream"]
+    if not qx_pairs and not qx_upstream:
+        raise ValueError("subscription-only mode requires a Quantumult X-compatible upstream node")
+    reserved_names = (
+        {"PROXY", "Reef", "AUTO", "DIRECT", "REJECT", "direct", "reject"}
+        | {pair["name"] for pair in pairs + qx_pairs}
+        | {f"entry-{node['id']}" for node in context["entries"]}
+    )
+    for index, proxy in enumerate(upstream, start=1):
+        if proxy["name"] in reserved_names:
+            raise ValueError(f"upstream node {index} name conflicts with a local node or policy")
+    if len(qx_upstream) < len(upstream):
+        print(
+            f"quantumult-x: skipped {len(upstream) - len(qx_upstream)} upstream node(s) "
+            "with unsupported protocols or options",
+            file=sys.stderr,
+        )
+    proxy_names = [node["name"] for node in pairs + upstream]
+    qx_proxy_names = [node["name"] for node in qx_pairs + qx_upstream]
     entry_groups = _entry_groups(context["entries"], pairs)
     qx_entry_groups = _entry_groups(context["entries"], qx_pairs)
     entry_override_rules = _entry_override_rules(entry_groups)
@@ -59,8 +82,10 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
                 "profile": profile,
                 "pairs": pairs,
                 "qx_pairs": qx_pairs,
-                "exit_groups": exit_groups,
-                "qx_exit_groups": qx_exit_groups,
+                "upstream_proxies": upstream,
+                "qx_upstream": qx_upstream,
+                "proxy_names": proxy_names,
+                "qx_proxy_names": qx_proxy_names,
                 "entry_groups": entry_groups,
                 "qx_entry_groups": qx_entry_groups,
                 "entry_override_rules": entry_override_rules,
@@ -84,17 +109,17 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
 def validate(profiles: list[dict[str, str]], context: dict[str, Any]) -> None:
     _require_context(context)
     by_id = {profile["id"]: profile for profile in profiles}
-    expected_exits = [node["id"] for node in context["exits"]]
     pairs = proxy_metadata(context, profile_id="client")
     qx_pairs = proxy_metadata(context, profile_id="quantumult-x")
-    route_names_by_exit = _route_names_by_exit(expected_exits, pairs)
+    upstream = context["upstream_proxies"]
+    qx_upstream = context["qx_upstream"]
+    proxy_names = [node["name"] for node in pairs + upstream]
     entry_groups = _entry_groups(context["entries"], pairs)
     qx_entry_groups = _entry_groups(context["entries"], qx_pairs)
 
     client = yaml.safe_load(by_id["client"]["body"])
-    _expect(len(client["proxies"]), len(pairs), "client proxy count mismatch")
-    _check_mihomo_proxy_shape(client, [pair["name"] for pair in pairs])
-    _check_groups(client, expected_exits, route_names_by_exit, "client.yaml")
+    _check_mihomo_proxy_shape(client, [pair["name"] for pair in pairs], upstream)
+    _check_groups(client, proxy_names, "client.yaml")
     _check_entry_groups(client, entry_groups, "client.yaml")
     expected_entry_rules = _entry_override_rules(entry_groups)
     expected_direct_rules = _direct_rules(pairs)
@@ -111,15 +136,14 @@ def validate(profiles: list[dict[str, str]], context: dict[str, Any]) -> None:
     )
 
     linux = yaml.safe_load(by_id["linux-server"]["body"])
-    _expect(len(linux["proxies"]), len(pairs), "linux-server proxy count mismatch")
-    _check_mihomo_proxy_shape(linux, [pair["name"] for pair in pairs])
-    _check_groups(linux, expected_exits, route_names_by_exit, "linux-server.yaml")
+    _check_mihomo_proxy_shape(linux, [pair["name"] for pair in pairs], upstream)
+    _check_groups(linux, proxy_names, "linux-server.yaml")
 
     _check_quantumult_x(
         by_id["quantumult-x"]["body"],
         qx_pairs,
-        expected_exits,
         qx_entry_groups,
+        qx_upstream,
     )
 
 
@@ -218,17 +242,6 @@ def _pair(
     }
 
 
-def _exit_groups(exits: list[dict[str, Any]], pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "name": exit_node["id"],
-            "exit_name": exit_node["id"],
-            "proxies": [pair["name"] for pair in pairs if pair["exit_name"] == exit_node["id"]],
-        }
-        for exit_node in exits
-    ]
-
-
 def _entry_groups(entries: list[dict[str, Any]], pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups = []
     for entry in entries:
@@ -249,16 +262,6 @@ def _entry_groups(entries: list[dict[str, Any]], pairs: list[dict[str, Any]]) ->
             }
         )
     return groups
-
-
-def _route_names_by_exit(
-    exits: list[str],
-    pairs: list[dict[str, Any]],
-) -> dict[str, list[str]]:
-    return {
-        exit_name: [pair["name"] for pair in pairs if pair["exit_name"] == exit_name]
-        for exit_name in exits
-    }
 
 
 def _expect(value: object, expected: object, message: str) -> None:
@@ -285,9 +288,16 @@ def _qx_entry_override_rules(entry_groups: list[dict[str, Any]]) -> list[str]:
     return [f"host, {group['host']}, {group['name']}" for group in entry_groups]
 
 
-def _check_mihomo_proxy_shape(doc: dict[str, Any], expected_names: list[str]) -> None:
-    _expect([proxy["name"] for proxy in doc["proxies"]], expected_names, "proxy order mismatch")
-    for proxy in doc["proxies"]:
+def _check_mihomo_proxy_shape(
+    doc: dict[str, Any], expected_names: list[str], upstream: list[dict[str, Any]]
+) -> None:
+    _expect(
+        [proxy["name"] for proxy in doc["proxies"]],
+        expected_names + [proxy["name"] for proxy in upstream],
+        "proxy order mismatch",
+    )
+    _expect(doc["proxies"][len(expected_names) :], upstream, "upstream proxy fields mismatch")
+    for proxy in doc["proxies"][: len(expected_names)]:
         for key in ["server", "port", "password", "sni", "fingerprint"]:
             if not proxy.get(key):
                 raise ValueError(f"{proxy['name']} must include {key}")
@@ -297,19 +307,14 @@ def _check_mihomo_proxy_shape(doc: dict[str, Any], expected_names: list[str]) ->
 
 def _check_groups(
     doc: dict[str, Any],
-    exits: list[str],
-    route_names_by_exit: dict[str, list[str]],
+    proxy_names: list[str],
     label: str,
 ) -> None:
     groups = _group_by_name(doc)
-    _expect(groups["PROXY"]["proxies"], exits, f"{label} PROXY choices mismatch")
-    for exit_name in exits:
-        group = groups[exit_name]
-        _expect(
-            group["proxies"],
-            route_names_by_exit[exit_name],
-            f"{label} {exit_name} routes mismatch",
-        )
+    _expect(groups["PROXY"]["type"], "select", f"{label} PROXY must be manual")
+    _expect(groups["PROXY"]["proxies"], ["AUTO"] + proxy_names, f"{label} PROXY choices mismatch")
+    _expect(groups["AUTO"]["type"], "url-test", f"{label} AUTO must test latency")
+    _expect(groups["AUTO"]["proxies"], proxy_names, f"{label} AUTO choices mismatch")
 
 
 def _check_entry_groups(
@@ -332,8 +337,8 @@ def _check_entry_groups(
 def _check_quantumult_x(
     body: str,
     pairs: list[dict[str, Any]],
-    exits: list[str],
     entry_groups: list[dict[str, Any]],
+    upstream: list[dict[str, str]],
 ) -> None:
     lines = [line.strip() for line in body.splitlines() if line.strip()]
     required_sections = {
@@ -351,7 +356,10 @@ def _check_quantumult_x(
     if missing_sections:
         raise ValueError("quantumult-x missing section(s): " + ", ".join(missing_sections))
 
-    server_lines = [line for line in lines if line.startswith("trojan=")]
+    local_start = lines.index("[server_local]") + 1
+    local_lines = lines[local_start : lines.index("[server_remote]")]
+    _expect(local_lines[len(pairs) :], [node["line"] for node in upstream], "QX upstream mismatch")
+    server_lines = local_lines[: len(pairs)]
     _expect(len(server_lines), len(pairs), "quantumult-x trojan count mismatch")
     for line, pair in zip(server_lines, pairs, strict=True):
         if not QX_TAG_RE.match(pair["name"]):
@@ -368,29 +376,27 @@ def _check_quantumult_x(
             raise ValueError(f"quantumult-x missing tls-cert-sha256 for {pair['name']}")
 
     top_policy = next((line for line in lines if line.startswith("static=Reef,")), "")
-    if not top_policy:
-        raise ValueError("quantumult-x missing Reef policy")
+    proxy_names = [node["name"] for node in pairs + upstream]
+    _expect(
+        top_policy,
+        "static=Reef, AUTO, " + ", ".join(proxy_names),
+        "quantumult-x Reef choices mismatch",
+    )
 
     policy_lines = [line for line in lines if line.startswith("url-latency-benchmark=")]
     _expect(
         len(policy_lines),
-        len(exits) + len(entry_groups),
+        1 + len(entry_groups),
         "quantumult-x policy count mismatch",
     )
-    for exit_name in exits:
-        expected = [pair["name"] for pair in pairs if pair["exit_name"] == exit_name]
-        matching = [
-            line
-            for line in policy_lines
-            if line.startswith(f"url-latency-benchmark={exit_name},")
-        ]
-        if len(matching) != 1:
-            raise ValueError(f"quantumult-x missing policy for {exit_name}")
-        if exit_name not in top_policy:
-            raise ValueError(f"quantumult-x Reef policy missing {exit_name}")
-        for proxy_name in expected:
-            if proxy_name not in matching[0]:
-                raise ValueError(f"quantumult-x {exit_name} policy missing {proxy_name}")
+    auto_policy = next(
+        (line for line in policy_lines if line.startswith("url-latency-benchmark=AUTO,")), ""
+    )
+    _expect(
+        auto_policy.split(", ")[1:-2],
+        proxy_names,
+        "quantumult-x AUTO choices mismatch",
+    )
 
     for entry_group in entry_groups:
         matching = [

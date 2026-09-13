@@ -35,6 +35,9 @@ The first-phase product shape:
 ├── subscriptions/
 │   ├── profiles.yaml
 │   ├── render.py
+│   ├── upstream.py
+│   ├── substore.py
+│   ├── substore.mjs
 │   └── <profile-template>.j2
 ├── reef/
 │   ├── core.py
@@ -57,6 +60,16 @@ The first-phase product shape:
 `providers/<provider-id>/` is the only place that maintains concrete node-side transport implementation details. Reef loads every provider bundle in deterministic directory-name order.
 
 `subscriptions/` owns the generated subscription profile set and the rendering logic that translates the core route model plus loaded providers into subscription documents.
+`subscriptions/upstream.py` fetches and merges nodes from optional upstream Clash
+subscriptions and validates the supported Quantumult X conversion inputs.
+`substore.py` verifies the pinned official Sub-Store bundle and invokes
+`substore.mjs`, an offline adapter around its parser and QX producer. The adapter
+receives only node data through stdin and never inherits Reef secrets or prints
+converter diagnostics. The subscription templates own all static client
+configuration. A generation uses
+one merged upstream snapshot for all three profiles and the Web artifacts.
+With upstream URLs and no cluster nodes, the core model has no routes or node
+secrets; the same subscription and Web rendering path works without deployment.
 
 ## Generated Artifacts
 

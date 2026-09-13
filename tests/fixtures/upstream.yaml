@@ -1,0 +1,64 @@
+# Synthetic nodes only; no real subscription credentials.
+mixed-port: 9999
+allow-lan: true
+dns:
+  nameserver: [https://upstream-dns.example.test/dns-query]
+proxy-groups:
+  - name: upstream-policy-must-not-be-imported
+    type: select
+    proxies: [DIRECT]
+rules:
+  - MATCH,REJECT
+proxies:
+  - name: "🇸🇬 HTTP: [TLS] #1"
+    type: http
+    server: http.example.test
+    port: 443
+    username: example-user
+    password: 'example "password"'
+    tls: true
+  - name: SOCKS TLS
+    type: socks5
+    server: socks.example.test
+    port: 443
+    username: example-user
+    password: example-password
+    tls: true
+    skip-cert-verify: false
+    sni: certificate.example.test
+  - name: AnyTLS
+    type: anytls
+    server: anytls.example.test
+    port: 443
+    password: example-password
+    skip-cert-verify: true
+    client-fingerprint: chrome
+  - name: Reality
+    type: vless
+    server: 192.0.2.30
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000001
+    network: tcp
+    tls: true
+    servername: reality.example.test
+    udp: true
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  - name: Trojan
+    type: trojan
+    server: trojan.example.test
+    port: 443
+    password: example-password
+    sni: certificate.example.test
+    alpn: [h2, http/1.1]
+  - name: TUIC
+    type: tuic
+    server: tuic.example.test
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000002
+    password: example-password
+    alpn: [h3]
+    congestion-controller: bbr
+    udp-relay-mode: native
+    skip-cert-verify: true

@@ -37,7 +37,7 @@ listeners:
     port: 17894
     udp: true
 
-{% if pairs | length > 0 -%}
+{% if pairs or upstream_proxies -%}
 proxies:
 {%- for pair in pairs %}
   - name: {{ pair.name }}
@@ -62,6 +62,9 @@ proxies:
     udp: false
 {%- endif %}
 {%- endfor %}
+{%- for proxy in upstream_proxies %}
+  - {{ proxy | tojson }}
+{%- endfor %}
 {% else -%}
 proxies: []
 {%- endif %}
@@ -69,16 +72,15 @@ proxies: []
 proxy-groups:
   - name: PROXY
     type: select
-    proxies: [{% for group in exit_groups %}{{ group.name }}{% if not loop.last %}, {% endif %}{% endfor %}]
-{%- for group in exit_groups %}
-  - name: {{ group.name }}
+    proxies: {{ (["AUTO"] + proxy_names) | tojson }}
+  - name: AUTO
     type: url-test
-    proxies: [{% for proxy in group.proxies %}{{ proxy }}{% if not loop.last %}, {% endif %}{% endfor %}]
+    proxies: {{ proxy_names | tojson }}
     url: https://www.gstatic.com/generate_204
     interval: 300
     timeout: 5000
+    tolerance: 50
     lazy: true
-{%- endfor %}
 
 rules:
   - MATCH,PROXY

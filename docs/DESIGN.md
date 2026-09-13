@@ -38,13 +38,14 @@ Their purpose:
 
 There is no standalone `render` recipe. Rendering is an internal step used by recipes that need fresh artifacts.
 
-`just smoke` verifies every generated client proxy through generated client configuration:
+`just smoke` verifies every Reef-managed client proxy through generated client configuration:
 
 - select one generated client proxy at a time
 - request to `https://api.ipify.org`
 - assert the returned IP equals the configured exit IP
 
 This intentionally assumes the configured exit IP is also the observed egress IP. If a provider or cloud network violates that assumption, the first phase should fail loudly rather than add extra configuration.
+Upstream subscription nodes are excluded because Reef does not know their egress IPs.
 
 ## Cluster Architecture
 
@@ -89,6 +90,11 @@ Rules:
 - First phase supports all entries connected to all exits.
 - `REEF_ENTRY_OVERRIDE_BASE_DOMAIN` is optional. When set, at least one entry is required.
 - `REEF_ENTRY_OVERRIDE_BASE_DOMAIN` is a base domain only. It must not include a scheme, path, wildcard, or trailing dot.
+- A Reef cluster requires at least one exit; entries are optional. With
+  upstream subscriptions, both entries and exits may be omitted for subscription-only
+  use. `REEF_SECRET` is still required to derive private subscription URL tokens.
+- Deployment recipes and `smoke` require a Reef cluster. Subscription-only use
+  requires no SSH key, runtime binaries, or remote nodes.
 
 ### Derived Model
 
@@ -293,6 +299,73 @@ The subscription renderer receives the derived route model and the loaded provid
 
 `web/generated/subscriptions.ts` is generated and ignored by git because it contains full subscription contents.
 
+### Upstream Subscription Nodes
+
+`REEF_UPSTREAM_URL_N` optionally supplies multiple HTTP(S) Clash/Mihomo YAML
+subscriptions, numbered consecutively from 1. The existing `REEF_UPSTREAM_URL`
+is still accepted and, when combined with numbered URLs, is read first.
+Each subscription generation fetches every configured subscription once and
+merges only their inline `proxies` lists. The existing Reef nodes remain available.
+Upstream nodes are not managed deployment nodes and do not change the cluster
+topology or derived secrets.
+
+The output set remains `client.yaml`, `linux-server.yaml`, and `quantumult-x.conf`.
+All three use the templates in `subscriptions/`: DNS, rules, listeners, and policy
+behavior remain locally maintained. Upstream rules, DNS, groups, and remote
+providers are ignored.
+Reef nodes come first, followed by upstream subscriptions in numeric order,
+preserving each subscription's node order.
+
+The two general-purpose groups are:
+
+- `PROXY` (`select`): `AUTO` first, then every concrete node. Select `AUTO` for
+  automatic choice, or pin one node manually for a stable egress location.
+- `AUTO` (`url-test`): all Reef and upstream nodes, testing every 300 seconds
+  with a 5-second timeout and a 50ms switching tolerance. Latency tests do not
+  establish access to a particular service or preserve an egress country.
+
+Quantumult X has the same structure with the existing `Reef` manual policy and
+an `AUTO` latency policy; only QX-compatible nodes appear in either.
+Per-exit and `UPSTREAM` groups are replaced by these two groups. Optional
+`entry-<name>` policies in the client and QX profiles remain separate, contain
+only that entry's relay routes, and retain their higher-priority domain rules. Client rules still send the AI
+and proxy rule sets to the main selector, China destinations directly, and
+remaining traffic to the selector. Linux server rules send all traffic to it.
+
+Without a Reef cluster, the same two groups contain only upstream nodes. At least one
+upstream node must be convertible to Quantumult X in this mode; otherwise
+generation fails rather than publishing an empty Quantumult X selector.
+
+Both Mihomo profiles preserve upstream node fields and names. Quantumult X
+uses the official Sub-Store 2.39.6 `proxy-utils.esm.mjs`, pinned by SHA-256,
+to convert HTTP, SOCKS5, AnyTLS, VLESS TCP, and Trojan TCP nodes with supported
+options, preserving credentials, TLS verification, SNI, and Reality parameters.
+Reef runs the parser and QX producer offline under Node.js 22 using an isolated
+browser context (`--experimental-vm-modules`). The release bundle is downloaded
+once into `build/substore/` and its checksum is checked before every run. No
+converter service or extra Secret is needed. Only the merged node snapshot
+crosses stdin; the converter receives neither the upstream URLs nor Reef's
+environment, and its raw diagnostics are never printed. Each generation converts
+once, then uses the same result for rendering and validation.
+Unsupported protocols or options are omitted from Quantumult X together with
+their group references; generation reports only the skipped count. TUIC remains
+available in Mihomo. Certificate pins enable TLS verification in Quantumult X,
+even with upstream `skip-cert-verify`, so the pin remains enforced. Quantumult X
+uses its own TLS client fingerprint; the upstream `client-fingerprint` is not
+transferred. Unspecified UDP and SNI values follow Sub-Store's defaults; VLESS
+TLS/Reality SNI uses `obfs-host` as in the official QX examples. Unexpected node
+loss or renaming by the converter fails generation. Conversion follows the
+[official Quantumult X node syntax](https://github.com/crossutility/Quantumult-X/blob/master/sample.conf).
+
+Invalid or empty node lists, duplicate names within or across subscriptions,
+names conflicting with local nodes or policies, dependencies on
+upstream policy groups, and unrepresentable values fail generation without
+printing subscription URLs, bodies, or credentials. Fetch or parse failures do
+not replace previously generated subscription files. There is no background
+poller: `just urls`, website builds, and other subscription rendering steps fetch
+fresh nodes; hosted contents change after the next successful website deployment.
+An upstream URL may contain credentials and must stay in `.env` / `REEF_WEB_ENV`.
+
 ### Website Deployment
 
 The website deployment workflow runs after changes land on `master`. It can also be triggered manually with GitHub Actions `workflow_dispatch`. It deploys the Vercel project from the repository root so Vercel can apply the Web app root directory setting.
@@ -306,11 +379,24 @@ VERCEL_ORG_ID
 VERCEL_PROJECT_ID
 ```
 
-`REEF_WEB_ENV` is a multiline `.env` payload for the subscription website. It must include the root seed and public topology values. It must not include `REEF_SSH_PRIVATE_KEY_B64` or test-only variables.
+`REEF_WEB_ENV` is the single multiline `.env` payload for all subscription website
+configuration, including all upstream Clash URLs. It must include the root seed
+and either public topology values or upstream URLs (or both). It must not
+include `REEF_SSH_PRIVATE_KEY_B64` or test-only variables. No separate upstream
+GitHub Secret or Vercel setting is needed.
+
+For subscription-only use, the complete payload can be:
+
+```env
+REEF_SECRET=<64 lowercase hex chars>
+REEF_UPSTREAM_URL_1=https://subscription.example.com/private-clash-url
+REEF_UPSTREAM_URL_2=https://another.example.com/private-clash-url
+```
 
 Run `just reef-web-env` to generate this payload. It reads `.env` (or
 `REEF_ENV_FILE`) with environment variables taking precedence, validates the
 website configuration, and outputs only `REEF_SECRET`, both port settings
-(including defaults), the optional entry override base domain, and all
-`REEF_ENTRY_N` / `REEF_EXIT_N` nodes. Copy the output into the GitHub Secret
-`REEF_WEB_ENV`, then run the website deployment workflow to publish changes.
+(including defaults), the optional entry override base domain, all upstream URLs
+(normalized to `REEF_UPSTREAM_URL_N`), and all `REEF_ENTRY_N` / `REEF_EXIT_N` nodes.
+Copy the output into the GitHub Secret `REEF_WEB_ENV`, then run the website
+deployment workflow to publish changes.

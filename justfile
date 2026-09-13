@@ -31,7 +31,6 @@ apply: setup
     {{ansible_playbook}} -i build/ansible/inventory.yml ansible/apply.yml --diff
 
 smoke: setup
-    {{python}} -m reef.cli.render subscriptions
     {{python}} -m reef.cli.smoke
 
 delete: setup
@@ -40,7 +39,6 @@ delete: setup
     {{ansible_playbook}} -i build/ansible/inventory.yml ansible/delete.yml --diff
 
 urls: setup
-    {{python}} -m reef.cli.render subscriptions web
     {{python}} -m reef.cli.urls
 
 reef-web-env: setup
@@ -56,4 +54,5 @@ web-dev: setup
     cd web && pnpm dev
 
 test: setup vendor
+    {{python}} -m unittest discover -s tests
     {{python}} tests/integration.py

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from reef.core import load_model, render_ansible, render_subscriptions, render_web
+from reef.core import is_ci, load_model, render_ansible, render_subscriptions, render_web
 
 
 def main() -> int:
@@ -15,10 +15,10 @@ def main() -> int:
     model = load_model(require_ssh=require_ssh)
     if "ansible" in args.targets:
         render_ansible(model)
-    if "subscriptions" in args.targets:
-        render_subscriptions(model)
     if "web" in args.targets:
         render_web(model)
+    elif "subscriptions" in args.targets:
+        render_subscriptions(model)
     return 0
 
 
@@ -26,5 +26,6 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(f"render: {exc}", file=sys.stderr)
+        message = "generation failed (details hidden in CI)" if is_ci() else str(exc)
+        print(f"render: {message}", file=sys.stderr)
         raise SystemExit(1)

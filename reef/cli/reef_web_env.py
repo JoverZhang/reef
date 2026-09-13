@@ -20,6 +20,10 @@ def main() -> int:
     ]
     if config.entry_override_base_domain:
         lines.append(f"REEF_ENTRY_OVERRIDE_BASE_DOMAIN={config.entry_override_base_domain}")
+    lines.extend(
+        f"REEF_UPSTREAM_URL_{index}={url}"
+        for index, url in enumerate(config.upstream_urls, start=1)
+    )
     for kind, nodes in (("ENTRY", config.entries), ("EXIT", config.exits)):
         lines.extend(f"REEF_{kind}_{node.index}={node.id},{node.ip}" for node in nodes)
     print("\n".join(lines))
@@ -30,5 +34,6 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(f"reef-web-env: {exc}", file=sys.stderr)
+        message = "configuration failed (details hidden in CI)" if is_ci() else str(exc)
+        print(f"reef-web-env: {message}", file=sys.stderr)
         raise SystemExit(1)

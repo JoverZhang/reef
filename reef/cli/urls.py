@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from reef.core import is_ci, load_model, render_subscriptions
+import sys
+
+from reef.core import is_ci, load_model, render_web
 
 
 def main() -> int:
     model = load_model()
     hide_tokens = is_ci()
-    for profile in render_subscriptions(model):
+    for profile in render_web(model):
         if hide_tokens:
             print(f"{profile['id']:<14} <hidden in CI>")
         else:
@@ -15,4 +17,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        message = "generation failed (details hidden in CI)" if is_ci() else str(exc)
+        print(f"urls: {message}", file=sys.stderr)
+        raise SystemExit(1)

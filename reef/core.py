@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 from cryptography import x509
@@ -19,6 +20,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.x509.oid import NameOID
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
+from subscriptions.upstream import load_nodes as load_upstream_nodes, quantumult_x_nodes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +71,7 @@ class Config:
     ssh_private_key_b64: str | None
     smoke_url: str
     entry_override_base_domain: str | None
+    upstream_urls: list[str]
 
 
 @dataclass(frozen=True)
@@ -144,8 +148,11 @@ def parse_config(values: dict[str, str], *, require_ssh: bool = False) -> Config
 
     entries = _parse_nodes(values, "ENTRY")
     exits = _parse_nodes(values, "EXIT")
-    if not exits:
-        raise ValueError("at least one REEF_EXIT_N is required")
+    upstream_urls = _parse_upstream_urls(values)
+    if not exits and (entries or not upstream_urls):
+        raise ValueError("at least one REEF_EXIT_N is required unless using only upstream URLs")
+    if require_ssh and not exits:
+        raise ValueError("deployment recipes require a Reef cluster with at least one REEF_EXIT_N")
 
     names = [n.id for n in [*entries, *exits]]
     duplicates = sorted({name for name in names if names.count(name) > 1})
@@ -179,7 +186,34 @@ def parse_config(values: dict[str, str], *, require_ssh: bool = False) -> Config
         ssh_private_key_b64=ssh_key,
         smoke_url="https://api.ipify.org",
         entry_override_base_domain=entry_override_base_domain,
+        upstream_urls=upstream_urls,
     )
+
+
+def _parse_upstream_urls(values: dict[str, str]) -> list[str]:
+    numbered = sorted(
+        (int(match.group(1)), key, value.strip())
+        for key, value in values.items()
+        if (match := re.fullmatch(r"REEF_UPSTREAM_URL_(\d+)", key))
+    )
+    if [index for index, _, _ in numbered] != list(range(1, len(numbered) + 1)):
+        raise ValueError("REEF_UPSTREAM_URL_N must be consecutive from 1")
+    sources = [(key, url) for _, key, url in numbered]
+    if legacy_url := values.get("REEF_UPSTREAM_URL", "").strip():
+        sources.insert(0, ("REEF_UPSTREAM_URL", legacy_url))
+    for name, url in sources:
+        try:
+            parsed_url = urlsplit(url)
+            valid_url = (
+                parsed_url.scheme in {"http", "https"}
+                and parsed_url.hostname
+                and (parsed_url.port is None or 1 <= parsed_url.port <= 65535)
+            )
+        except ValueError:
+            valid_url = False
+        if not valid_url or any(c.isspace() or ord(c) < 32 for c in url):
+            raise ValueError(f"{name} must be an HTTP(S) subscription URL")
+    return [url for _, url in sources]
 
 
 def _parse_nodes(values: dict[str, str], kind: str) -> list[Node]:
@@ -798,6 +832,8 @@ def render_subscriptions(model: Model, host_map_path: Path | None = None) -> lis
     host_map = _load_json_file(host_map_path or _env_path("TEST_HOST_MAP"))
     renderer = load_subscription_renderer()
     context = subscription_context(model, host_map)
+    context["upstream_proxies"] = load_upstream_nodes(model.config.upstream_urls)
+    context["qx_upstream"] = quantumult_x_nodes(context["upstream_proxies"])
     rendered = renderer.render(context)
     if hasattr(renderer, "validate"):
         renderer.validate(rendered, context)
@@ -856,6 +892,8 @@ def subscription_context(model: Model, host_map: dict[str, Any] | None = None) -
         "entries": [_node_dict(node, model) for node in model.config.entries],
         "exits": [_node_dict(node, model) for node in model.config.exits],
         "entry_override_base_domain": model.config.entry_override_base_domain,
+        "upstream_proxies": [],
+        "qx_upstream": [],
     }
 
 
@@ -884,7 +922,7 @@ def load_subscription_renderer():
     return module
 
 
-def render_web(model: Model) -> None:
+def render_web(model: Model) -> list[dict[str, str]]:
     profiles = render_subscriptions(model)
     out = project_path("web", "generated", "subscriptions.ts")
     _ensure_private_dir(out.parent)
@@ -899,6 +937,7 @@ def render_web(model: Model) -> None:
     ]
     _write_private(
         out,
+        "import 'server-only';\n\n"
         "export type GeneratedSubscription = {\n"
         "  id: string;\n"
         "  token: string;\n"
@@ -907,6 +946,7 @@ def render_web(model: Model) -> None:
         "};\n\n"
         f"export const subscriptions: GeneratedSubscription[] = {json.dumps(items, indent=2)};\n",
     )
+    return profiles
 
 
 def load_model(*, require_ssh: bool = False) -> Model:
