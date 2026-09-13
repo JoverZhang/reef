@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     env:
+      CI: "true"
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -45,16 +46,51 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          if [ -z "${REEF_WEB_ENV}" ]; then
-            echo "REEF_WEB_ENV is empty"
-            exit 1
-          fi
-          printf '%s\n' "${REEF_WEB_ENV}" > .env
-          grep -q '^REEF_SECRET=' .env
-          if grep -Eq '^(REEF_SSH_PRIVATE_KEY_B64|REEF_TEST_MODE|TEST_[A-Z0-9_]+)=' .env; then
-            echo "REEF_WEB_ENV contains deployment-only or test-only variables"
-            exit 1
-          fi
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+          from urllib.parse import urlsplit, parse_qsl, unquote
+
+          payload = os.environ.get("REEF_WEB_ENV", "")
+          values = {}
+          for raw in payload.splitlines():
+              line = raw.strip()
+              if not line or line.startswith("#"):
+                  continue
+              key, separator, value = line.partition("=")
+              key, value = key.strip(), value.strip()
+              if not separator or key in values or not re.fullmatch(
+                  r"REEF_(SECRET|ENTRY_PORT_BASE|EXIT_PORT|ENTRY_OVERRIDE_BASE_DOMAIN|"
+                  r"ENTRY_[1-9][0-9]*|EXIT_[1-9][0-9]*|UPSTREAM_URL(?:_[1-9][0-9]*)?)", key
+              ):
+                  raise SystemExit("REEF_WEB_ENV contains an invalid, duplicate, or non-website variable")
+              if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                  value = value[1:-1]
+              values[key] = value
+          if not values.get("REEF_SECRET"):
+              raise SystemExit("REEF_WEB_ENV must contain REEF_SECRET")
+
+          # A multiline GitHub Secret does not cover every extracted/transformed value.
+          masks = set(values.values())
+          for key, value in values.items():
+              if key.startswith("REEF_UPSTREAM_URL"):
+                  try:
+                      url = urlsplit(value)
+                      masks.update(unquote(part) for part in url.path.split("/") if part)
+                      masks.update(v for _, v in parse_qsl(url.query))
+                      masks.update(filter(None, (url.username, url.password)))
+                  except ValueError:
+                      raise SystemExit("REEF_WEB_ENV contains an invalid upstream URL")
+          for value in sorted(masks):
+              if value:
+                  escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                  print("::add-mask::" + escaped, flush=True)
+          path = Path(".env")
+          path.touch(mode=0o600, exist_ok=True)
+          path.chmod(0o600)
+          path.write_text(payload + "\n")
+          PY
 
       - name: Install Vercel CLI
         run: npm install --global vercel@54.21.0
@@ -63,7 +99,16 @@ jobs:
         run: vercel pull --yes --environment=production
 
       - name: Build
-        run: vercel build --prod
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p build
+          # Compiler diagnostics can quote generated source containing node credentials.
+          if ! vercel build --prod > build/website-build.log 2>&1; then
+            echo "Website build failed; detailed output withheld because it may contain subscription credentials"
+            exit 1
+          fi
+          echo "Website build succeeded"
 
       - name: Deploy
         run: |
@@ -72,4 +117,4 @@ jobs:
 
       - name: Remove local environment files
         if: always()
-        run: rm -f .env .vercel/.env*.local
+        run: rm -f .env .vercel/.env*.local build/website-build.log

@@ -385,6 +385,15 @@ and either public topology values or upstream URLs (or both). It must not
 include `REEF_SSH_PRIVATE_KEY_B64` or test-only variables. No separate upstream
 GitHub Secret or Vercel setting is needed.
 
+The workflow validates an allowlist of website variables, registers masks for
+individual values and upstream URL credentials/tokens, and writes `.env` with
+mode `0600`. CI suppresses raw generation exceptions and hides subscription URL
+tokens. Vercel build diagnostics are captured privately because compiler errors
+can quote generated source containing credentials; CI reports only build status.
+Environment files and the captured build log are removed even on failure. No
+subscription bodies are uploaded as workflow artifacts. The generated Web module
+is marked `server-only` so a client component cannot import its credentials.
+
 For subscription-only use, the complete payload can be:
 
 ```env
