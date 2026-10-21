@@ -90,7 +90,7 @@ class CISecretTests(unittest.TestCase):
     def test_workflow_masks_native_provider_credentials_and_round_trips_config(self):
         document = {
             "secret": SECRET,
-            "proxy-providers": {"upstream": {"type": "http", "url": URL, "filter": "新加坡|美国"}},
+            "proxy-providers": {"upstream": {"type": "http", "url": URL, "filter": "Singapore|United States"}},
             "proxy-groups": [{"name": "PROXY", "type": "select", "use": ["upstream"]}],
         }
         result = self.run_step("Write configuration", CONFIG_YAML=core.dump_config(document))

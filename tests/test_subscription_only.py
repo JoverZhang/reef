@@ -49,7 +49,7 @@ class SubscriptionOnlyTests(unittest.TestCase):
         patch.dict(os.environ, {}, clear=True).start()
         self.proxies = [
             {
-                "name": "香港 🇭🇰 TLS",
+                "name": "Hong Kong 🇭🇰 TLS",
                 "type": "http",
                 "server": "proxy.example.com",
                 "port": 443,
@@ -159,8 +159,8 @@ class SubscriptionOnlyTests(unittest.TestCase):
             self.assertEqual(groups["AUTO"]["proxies"], names)
             self.assertNotIn("ignored-upstream", profile["body"])
         qx = profiles[2]["body"]
-        self.assertIn("static=Reef, AUTO, 香港 🇭🇰 TLS", qx)
-        self.assertIn("tag=香港 🇭🇰 TLS", qx)
+        self.assertIn("static=Reef, AUTO, Hong Kong 🇭🇰 TLS", qx)
+        self.assertIn("tag=Hong Kong 🇭🇰 TLS", qx)
         self.assertIn("over-tls=true", qx)
         self.assertIn("tls-verification=true", qx)
         self.assertNotIn("TUIC example", qx)
@@ -183,7 +183,7 @@ class SubscriptionOnlyTests(unittest.TestCase):
             self.assertEqual(doc["proxy-groups"][0]["proxies"], ["AUTO"] + [p["name"] for p in doc["proxies"]])
         self.assertEqual(len(core.subscription_proxy_metadata(model)), 4)
         self.assertEqual(self.requests, 1)
-        self.assertIn("static=Reef, AUTO, sg-us, us-direct, 香港 🇭🇰 TLS", profiles[2]["body"])
+        self.assertIn("static=Reef, AUTO, sg-us, us-direct, Hong Kong 🇭🇰 TLS", profiles[2]["body"])
 
     def test_updated_upstream_keeps_subscription_tokens_stable(self) -> None:
         first = self.generate()

@@ -21,6 +21,7 @@ DRY is not the goal by itself. Avoid duplicated meaning, not harmless repeated s
 
 ## Project Rules
 
+- Use English in source code, comments, public configuration examples, and test fixtures.
 - `justfile` is the user interface. Do not add another CLI layer.
 - Python is the generator and glue layer only.
 - Ansible is the deployment engine only.

@@ -7,16 +7,16 @@ proxy-providers:
   relay-a:
     type: http
     url: "https://subscription-a.example.com/private-clash-url"
-    filter: "香港|新加坡|日本"
-    exclude-filter: "剩余|到期|流量"
+    filter: "Hong Kong|Singapore|Japan"
+    exclude-filter: "Remaining|Expires|Traffic"
     override:
       additional-prefix: "A | "
 
   relay-b:
     type: http
     url: "https://subscription-b.example.com/private-clash-url"
-    filter: "香港|新加坡|日本"
-    exclude-filter: "剩余|到期|流量"
+    filter: "Hong Kong|Singapore|Japan"
+    exclude-filter: "Remaining|Expires|Traffic"
     override:
       additional-prefix: "B | "
 
