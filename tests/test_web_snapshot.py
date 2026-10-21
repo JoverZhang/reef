@@ -164,6 +164,16 @@ class WebSnapshotTests(unittest.TestCase):
         self.assertEqual(document["proxies"][0]["password"], "off")
         self.assertEqual(document["proxies"][0]["username"], "yes")
 
+    def test_qx_server_check_uses_http_without_changing_mihomo_probes(self):
+        result = self.request({"type": "qx"}, download=True)
+        self.assertEqual(result["status"], 200)
+        checks = [line for line in result["body"].splitlines() if line.startswith("server_check_url=")]
+        self.assertEqual(checks, ["server_check_url=http://www.gstatic.com/generate_204"])
+        for kind in ("clash", "clash-geo"):
+            document = yaml.safe_load(self.request({"type": kind}, download=True)["body"])
+            urls = {group["url"] for group in document["proxy-groups"] if group["type"] == "url-test"}
+            self.assertEqual(urls, {"https://www.gstatic.com/generate_204"})
+
     def test_qx_uses_three_selection_levels_and_collapses_supported_exit_protocols(self):
         preview = self.request({"type": "qx"})
         self.assertEqual(preview["status"], 200)

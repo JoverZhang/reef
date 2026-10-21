@@ -99,7 +99,7 @@ class MihomoInputTests(unittest.TestCase):
         qx = profiles[2]["body"]
         self.assertIn("static=Reef, AUTO, own-trojan, own-backup, Sample-A 01", qx)
         self.assertIn("url-latency-benchmark=AUTO, Sample-A 01, Sample-B 02, own-backup, check-interval=300, tolerance=50, alive-checking=true", qx)
-        self.assertIn("server_check_url=https://www.gstatic.com/generate_204", qx)
+        self.assertIn("server_check_url=http://www.gstatic.com/generate_204", qx)
         self.assertIn("final, Reef", qx)
         self.assertIn("force-policy=Reef", qx)
         for profile in profiles:
@@ -319,11 +319,28 @@ class MihomoInputTests(unittest.TestCase):
         self.assertNotIn("entry-sg", profiles[2]["body"])
         document["proxy-groups"] = [{
             "name": "PROXY", "type": "url-test", "include-all": True,
-            "url": "https://probe.example.test/check", "timeout": 3000,
+            "url": "http://probe.example.test/check", "timeout": 3000,
         }]
         profiles = self.generate(document)
-        self.assertIn("server_check_url=https://probe.example.test/check", profiles[2]["body"])
+        self.assertIn("server_check_url=http://probe.example.test/check", profiles[2]["body"])
         self.assertIn("server_check_timeout=3000", profiles[2]["body"])
+
+    def test_custom_https_probe_fails_qx_generation_without_replacing_artifacts(self):
+        document = {
+            "secret": SECRET, "proxies": [LOCAL],
+            "proxy-groups": [{"name": "PROXY", "type": "url-test", "include-all": True,
+                              "url": "http://probe.example.test/check"}],
+        }
+        self.generate(document)
+        before = self.artifacts()
+        document["proxy-groups"][0]["url"] = "https://probe.example.test/private?token=private"
+        with self.assertRaisesRegex(ValueError, "^Quantumult X server_check_url requires an HTTP probe URL$"):
+            self.generate(document)
+        self.assertEqual(self.artifacts(), before)
+        profiles = self.generate(document, mihomo_only=True)
+        for profile in profiles:
+            self.assertEqual(yaml.safe_load(profile["body"])["proxy-groups"][0]["url"],
+                             document["proxy-groups"][0]["url"])
 
     def test_config_export_preserves_native_fields_without_fetching(self):
         core.write_config(self.config, self.root / "config.yaml")

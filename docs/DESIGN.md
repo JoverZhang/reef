@@ -410,6 +410,11 @@ left empty fails generation. `select` maps to `static`, and `url-test` to
 `url-latency-benchmark`. `PROXY` maps to the existing QX policy `Reef`. Latency
 groups support `url`, `interval`, `timeout` (up to 5000 ms), `tolerance`, and
 `lazy`; they must use one common probe URL and timeout for QX's general settings.
+QX's `server_check_url` requires HTTP. Reef maps its built-in
+`https://www.gstatic.com/generate_204` probe to the HTTP version for QX only;
+Mihomo retains HTTPS. Other custom probe URLs must use HTTP for QX export.
+An unsupported HTTPS probe fails generation without printing its URL or
+replacing artifacts; it is never silently downgraded.
 These QX restrictions are checked only when generating QX; the Mihomo preview
 allows independent probe settings and latency groups containing other groups.
 Other provider/group options, including provider health checks and file

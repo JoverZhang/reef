@@ -351,4 +351,9 @@ def qx_policies(groups: list[dict], node_aliases: dict[str, str]) -> tuple[list[
     if len(probes) > 1:
         raise ValueError("Quantumult X latency groups require one common probe URL and timeout")
     url, timeout = next(iter(probes), (PROBE_URL, 5000))
+    # QX requires HTTP probes; only the built-in endpoint has a known HTTP equivalent.
+    if url == PROBE_URL:
+        url = url.replace("https://", "http://", 1)
+    if not url.startswith("http://"):
+        raise ValueError("Quantumult X server_check_url requires an HTTP probe URL")
     return lines, url, timeout
