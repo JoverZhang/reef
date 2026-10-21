@@ -1,3 +1,4 @@
+# All names, addresses, and credentials below are fictional placeholders.
 # Private local configuration: config.yaml (git-ignored).
 # Start with `just gen-secret`, then add the sections you need below.
 # Replace this placeholder if you copy the example instead.
@@ -11,11 +12,11 @@ cluster:
   entry_port_base: 20000
   exit_port: 443
   entries:
-    - {name: sg, ip: 192.0.2.10}
-    - {name: jp, ip: 192.0.2.11}
+    - {name: entry-a, ip: 192.0.2.10}
+    - {name: entry-b, ip: 192.0.2.11}
   exits:
-    - {name: us, ip: 192.0.2.20}
-    - {name: uk, ip: 192.0.2.21}
+    - {name: exit-a, ip: 192.0.2.20}
+    - {name: exit-b, ip: 192.0.2.21}
 
 # Ordinary Mihomo proxy definitions; no Reef-specific node syntax is needed.
 proxies: []
@@ -36,12 +37,12 @@ proxies: []
 # Collections are resolved at generation time. URLs stay out of all outputs.
 # Fetch errors stop generation and report only the URL/provider positions.
 proxy-providers: {}
-#  overseas:
+#  pool-a:
 #    type: http
 #    url: "https://subscription.example.com/private-clash-url"
 #    interval: 3600
-#    filter: "Singapore|United States"
-#    exclude-filter: "Hong Kong"
+#    filter: "Sample-A|Sample-B"
+#    exclude-filter: "Sample-Excluded"
 #    override:
 #      additional-prefix: "upstream-1 | "
 #  owned:
@@ -71,7 +72,7 @@ proxy-groups:
     lazy: true
 
 # To select collections explicitly, replace include-all with:
-#    use: [overseas, owned]
+#    use: [pool-a, owned]
 # First-version provider/group options are listed in docs/DESIGN.md.
 # For independently selectable intermediate and exit nodes, see
 # config.mihomo.example.yaml and generate a preview with `just urls mihomo`.

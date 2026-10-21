@@ -22,6 +22,9 @@ DRY is not the goal by itself. Avoid duplicated meaning, not harmless repeated s
 ## Project Rules
 
 - Use English in source code, comments, public configuration examples, and test fixtures.
+- Public examples and fixtures must use independently invented names and documentation
+  addresses. Never copy private operator node names, subscription names, locations,
+  abbreviations, transliterations, domains, IPs, or credentials into public files.
 - `justfile` is the user interface. Do not add another CLI layer.
 - Python is the generator and glue layer only.
 - Ansible is the deployment engine only.

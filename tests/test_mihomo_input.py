@@ -25,7 +25,7 @@ LOCAL = {
 }
 NODES = [
     {"name": name, "type": "http", "server": "proxy.example.test", "port": 443}
-    for name in ("Singapore 01", "United States 02", "Hong Kong 03")
+    for name in ("Sample-A 01", "Sample-B 02", "Sample-C 03")
 ]
 CONFIG = {
     "secret": SECRET,
@@ -33,14 +33,14 @@ CONFIG = {
     "proxy-providers": {
         "overseas": {
             "type": "http", "url": URL, "interval": 3600,
-            "filter": "Singapore|United States|Hong Kong", "exclude-filter": "Hong Kong",
+            "filter": "Sample-A|Sample-B|Sample-C", "exclude-filter": "Sample-C",
         },
-        "singapore": {"type": "http", "url": URL, "filter": "Singapore"},
+        "sample-a": {"type": "http", "url": URL, "filter": "Sample-A"},
         "owned": {"type": "inline", "payload": [{**LOCAL, "name": "own-backup"}]},
     },
     "proxy-groups": [
         {"name": "PROXY", "type": "select", "proxies": ["AUTO", "own-trojan"],
-         "use": ["owned", "singapore"]},
+         "use": ["owned", "sample-a"]},
         {"name": "AUTO", "type": "url-test", "use": ["overseas", "owned"],
          "url": "https://www.gstatic.com/generate_204", "interval": 300,
          "tolerance": 50, "lazy": False},
@@ -82,25 +82,25 @@ class MihomoInputTests(unittest.TestCase):
             profiles = self.generate()
         self.assertEqual(fetch.call_count, 1)
         self.assertEqual([p["id"] for p in profiles], ["client", "linux-server", "quantumult-x"])
-        expected_names = ["own-trojan", "Singapore 01", "United States 02", "own-backup"]
+        expected_names = ["own-trojan", "Sample-A 01", "Sample-B 02", "own-backup"]
         for profile in profiles[:2]:
             document = yaml.safe_load(profile["body"])
             self.assertEqual([node["name"] for node in document["proxies"]], expected_names)
             groups = document["proxy-groups"]
-            self.assertEqual(groups[0]["proxies"], ["AUTO", "own-trojan", "own-backup", "Singapore 01"])
-            self.assertEqual(groups[1]["proxies"], ["Singapore 01", "United States 02", "own-backup"])
+            self.assertEqual(groups[0]["proxies"], ["AUTO", "own-trojan", "own-backup", "Sample-A 01"])
+            self.assertEqual(groups[1]["proxies"], ["Sample-A 01", "Sample-B 02", "own-backup"])
             self.assertFalse(any("use" in group for group in groups))
             self.assertNotIn("proxy-providers", document)
         self.assertEqual(yaml.safe_load(profiles[1]["body"])["rules"], ["MATCH,PROXY"])
         self.assertIn("RULE-SET,bm_proxy,PROXY", yaml.safe_load(profiles[0]["body"])["rules"])
         qx = profiles[2]["body"]
-        self.assertIn("static=Reef, AUTO, own-trojan, own-backup, Singapore 01", qx)
-        self.assertIn("url-latency-benchmark=AUTO, Singapore 01, United States 02, own-backup, check-interval=300, tolerance=50, alive-checking=true", qx)
+        self.assertIn("static=Reef, AUTO, own-trojan, own-backup, Sample-A 01", qx)
+        self.assertIn("url-latency-benchmark=AUTO, Sample-A 01, Sample-B 02, own-backup, check-interval=300, tolerance=50, alive-checking=true", qx)
         self.assertIn("server_check_url=https://www.gstatic.com/generate_204", qx)
         self.assertIn("final, Reef", qx)
         self.assertIn("force-policy=Reef", qx)
         for profile in profiles:
-            for private in (URL, "private-password", "private-path", "private-query", "Hong Kong 03"):
+            for private in (URL, "private-password", "private-path", "private-query", "Sample-C 03"):
                 self.assertNotIn(private, profile["body"])
             self.assertEqual(Path(profile["output"]).read_text(), profile["body"])
         generated = (self.root / "web/generated/subscriptions.ts").read_text()
@@ -117,17 +117,17 @@ class MihomoInputTests(unittest.TestCase):
         self.assertEqual(yaml.safe_load(profiles[0]["body"])["proxies"], [LOCAL])
 
     def named_collections(self):
-        sources = [{"name": name, "url": URL + f"-{name}"} for name in ("xq", "xq2", "lx")]
+        sources = [{"name": name, "url": URL + f"-{name}"} for name in ("source-a", "source-b", "source-c")]
         return {
             "secret": SECRET,
             "proxy-providers": {
-                "xq": {"type": "http", "upstreams": sources[:2], "filter": "^Singapore"},
-                "lx": {"type": "http", "upstreams": sources[2:], "filter": "^Singapore"},
-                "all": {"type": "http", "upstreams": sources + sources[:1], "filter": "^Singapore"},
+                "source-a": {"type": "http", "upstreams": sources[:2], "filter": "^Sample-A"},
+                "source-c": {"type": "http", "upstreams": sources[2:], "filter": "^Sample-A"},
+                "all": {"type": "http", "upstreams": sources + sources[:1], "filter": "^Sample-A"},
             },
             "proxy-groups": [
-                {"name": "PROXY", "type": "select", "proxies": ["xq", "lx", "all"]},
-                *[{"name": name, "type": "url-test", "use": [name]} for name in ("xq", "lx", "all")],
+                {"name": "PROXY", "type": "select", "proxies": ["source-a", "source-c", "all"]},
+                *[{"name": name, "type": "url-test", "use": [name]} for name in ("source-a", "source-c", "all")],
             ],
         }
 
@@ -136,13 +136,13 @@ class MihomoInputTests(unittest.TestCase):
         with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()) as fetch:
             profiles = self.generate(config)
         self.assertEqual(fetch.call_count, 3)
-        names = [f"{name} | Singapore 01" for name in ("xq", "xq2", "lx")]
+        names = [f"{name} | Sample-A 01" for name in ("source-a", "source-b", "source-c")]
         for profile in profiles[:2]:
             doc = yaml.safe_load(profile["body"])
             self.assertEqual([node["name"] for node in doc["proxies"]], names)
             groups = {g["name"]: g for g in doc["proxy-groups"]}
-            self.assertEqual(groups["xq"]["proxies"], names[:2])
-            self.assertEqual(groups["lx"]["proxies"], names[2:])
+            self.assertEqual(groups["source-a"]["proxies"], names[:2])
+            self.assertEqual(groups["source-c"]["proxies"], names[2:])
             self.assertEqual(groups["all"]["proxies"], names)
             self.assertNotIn("proxy-providers", doc)
         for name in names:
@@ -150,7 +150,7 @@ class MihomoInputTests(unittest.TestCase):
         for profile in profiles:
             self.assertNotIn("private-", profile["body"])
         # Membership is explicit, even for a collection named all.
-        config["proxy-providers"]["all"]["upstreams"] = config["proxy-providers"]["lx"]["upstreams"]
+        config["proxy-providers"]["all"]["upstreams"] = config["proxy-providers"]["source-c"]["upstreams"]
         with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
             doc = yaml.safe_load(self.generate(config)[0]["body"])
         self.assertEqual(doc["proxy-groups"][-1]["proxies"], names[2:])
@@ -159,12 +159,12 @@ class MihomoInputTests(unittest.TestCase):
         config = self.named_collections()
         exits = [
             {**LOCAL, "name": name, "dialer-proxy": f"RELAY-{key}"}
-            for name, key in (("US | MEGABOX", "MEGABOX"), ("SG 1 | Alibaba", "sg1"), ("SG 2 | Alibaba", "sg2"))
+            for name, key in (("Endpoint A", "endpoint-a"), ("Endpoint B", "endpoint-b"), ("Endpoint C", "endpoint-c"))
         ]
         config["proxy-providers"]["exits"] = {"type": "inline", "payload": exits}
         config["proxy-groups"][0] = {"name": "PROXY", "type": "select", "use": ["exits"]}
         config["proxy-groups"].extend(
-            {"name": node["dialer-proxy"], "type": "select", "proxies": ["all", "xq", "lx"]}
+            {"name": node["dialer-proxy"], "type": "select", "proxies": ["all", "source-a", "source-c"]}
             for node in exits
         )
         with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()) as fetch:
@@ -176,7 +176,7 @@ class MihomoInputTests(unittest.TestCase):
             self.assertEqual(doc["proxy-groups"][0]["proxies"], [n["name"] for n in exits])
             self.assertEqual(doc["proxies"][-3:], exits)
             self.assertEqual(len(doc["proxy-groups"]), 7)
-            self.assertTrue(all(g["proxies"] == ["all", "xq", "lx"] for g in doc["proxy-groups"][-3:]))
+            self.assertTrue(all(g["proxies"] == ["all", "source-a", "source-c"] for g in doc["proxy-groups"][-3:]))
 
     def test_named_upstream_failure_does_not_replace_artifacts_or_echo_urls(self):
         config = self.named_collections()
@@ -192,12 +192,12 @@ class MihomoInputTests(unittest.TestCase):
         config = self.named_collections()
         config["proxy-providers"] = {"a": {
             "type": "http", "upstreams": [{"name": "feed", "url": URL}, {"name": "feed", "url": URL + "2"}],
-            "filter": "^Singapore", "override": {"additional-prefix": "[", "additional-suffix": "]"},
+            "filter": "^Sample-A", "override": {"additional-prefix": "[", "additional-suffix": "]"},
         }}
         config["proxy-groups"] = [{"name": "PROXY", "type": "select", "use": ["a"]}]
         with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
             doc = yaml.safe_load(self.generate(config)[0]["body"])
-        self.assertEqual([n["name"] for n in doc["proxies"]], ["[feed | Singapore 01]"])
+        self.assertEqual([n["name"] for n in doc["proxies"]], ["[feed | Sample-A 01]"])
         with patch.object(upstream, "urlopen", side_effect=[self.response(), self.response([{**NODES[0], "port": 8443}])]):
             with self.assertRaisesRegex(ValueError, "conflicting node name"):
                 self.generate(config)
@@ -262,7 +262,7 @@ class MihomoInputTests(unittest.TestCase):
             self.assertEqual(self.artifacts(), before)
 
     def test_later_url_failure_reports_its_position(self):
-        self.config["proxy-providers"]["singapore"]["url"] = URL + "-second"
+        self.config["proxy-providers"]["sample-a"]["url"] = URL + "-second"
         with patch.object(upstream, "urlopen", side_effect=[self.response(), URLError(URL)]):
             with self.assertRaisesRegex(ValueError, r"^upstream URL #2 \(proxy-provider #2\) fetch failed$"):
                 self.generate()
@@ -332,12 +332,12 @@ class MihomoInputTests(unittest.TestCase):
         return {
             "secret": SECRET,
             "proxy-providers": {
-                "relays": {"type": "http", "url": URL, "filter": "Singapore|Hong Kong",
+                "relays": {"type": "http", "url": URL, "filter": "Sample-A|Sample-C",
                            "override": {"additional-prefix": "relay | "}},
                 "exits": {"type": "inline", "payload": [
-                    {**LOCAL, "name": "sg1"},
-                    {"name": "MEGABOX", "type": "vless", "server": "megabox.example.test",
-                     "port": 8881, "uuid": "00000000-0000-4000-8000-000000000001",
+                    {**LOCAL, "name": "endpoint-b"},
+                    {"name": "endpoint-a", "type": "vless", "server": "endpoint-a.example.test",
+                     "port": 8443, "uuid": "00000000-0000-4000-8000-000000000001",
                      "tls": True, "flow": "xtls-rprx-vision", "network": "tcp"},
                 ], "override": {"dialer-proxy": "RELAY"}},
             },
@@ -363,12 +363,12 @@ class MihomoInputTests(unittest.TestCase):
             self.assertEqual(Path(profile["output"]).parent, self.root / "build/subscriptions/mihomo")
             doc = yaml.safe_load(profile["body"])
             nodes = {node["name"]: node for node in doc["proxies"]}
-            for name in ("MEGABOX", "sg1"):
+            for name in ("endpoint-a", "endpoint-b"):
                 self.assertEqual(nodes[name]["dialer-proxy"], "RELAY")
-            for name in ("relay | Singapore 01", "relay | Hong Kong 03"):
+            for name in ("relay | Sample-A 01", "relay | Sample-C 03"):
                 self.assertNotIn("dialer-proxy", nodes[name])
-            self.assertEqual(doc["proxy-groups"][0]["proxies"], ["sg1", "MEGABOX"])
-            self.assertEqual(doc["proxy-groups"][1]["proxies"], ["RELAY-AUTO", "relay | Singapore 01", "relay | Hong Kong 03"])
+            self.assertEqual(doc["proxy-groups"][0]["proxies"], ["endpoint-b", "endpoint-a"])
+            self.assertEqual(doc["proxy-groups"][1]["proxies"], ["RELAY-AUTO", "relay | Sample-A 01", "relay | Sample-C 03"])
             self.assertNotIn(URL, profile["body"])
         after = self.artifacts()
         self.assertTrue(all(after[path] == body for path, body in before.items()))
@@ -387,7 +387,7 @@ class MihomoInputTests(unittest.TestCase):
         for profile in profiles:
             self.assertEqual(Path(profile["output"]).parent, self.root / "build/subscriptions")
             nodes = yaml.safe_load(profile["body"])["proxies"]
-            self.assertEqual({p["name"] for p in nodes if p.get("dialer-proxy") == "RELAY"}, {"sg1", "MEGABOX"})
+            self.assertEqual({p["name"] for p in nodes if p.get("dialer-proxy") == "RELAY"}, {"endpoint-b", "endpoint-a"})
         self.assertFalse(Path(original[2]["output"]).exists())
         generated = (self.root / "web/generated/subscriptions.ts").read_text()
         web = json.loads(generated.split("GeneratedSubscription[] = ", 1)[1].rstrip(";\n"))
@@ -421,7 +421,7 @@ class MihomoInputTests(unittest.TestCase):
             self.generate(config, mihomo_only=True)
         before = self.artifacts()
         cases = []
-        for target in ("missing", "sg1", "PROXY"):
+        for target in ("missing", "endpoint-b", "PROXY"):
             changed = copy.deepcopy(config)
             changed["proxy-providers"]["exits"]["override"]["dialer-proxy"] = target
             cases.append(changed)
@@ -435,7 +435,7 @@ class MihomoInputTests(unittest.TestCase):
         ], "proxy-groups": [{"name": "PROXY", "type": "select", "proxies": ["a"]}]})
         # The cycle is present even when the first relay candidate is valid.
         changed = copy.deepcopy(config)
-        changed["proxy-groups"][1]["proxies"].append("sg1")
+        changed["proxy-groups"][1]["proxies"].append("endpoint-b")
         cases.append(changed)
         for changed in cases:
             for mihomo_only in (True, False):

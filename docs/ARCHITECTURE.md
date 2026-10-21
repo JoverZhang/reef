@@ -134,11 +134,12 @@ System services are declared by the provider manifest. Ansible runs the Reef nod
 
 ## Test Layout
 
-`just test` uses four gateway nodes and one internal echo target:
+`just test` uses four gateway nodes and one internal echo target. An illustrative
+topology with placeholder node names:
 
 ```text
-entries: sg, jp
-exits:   us, uk
+entries: entry-a, entry-b
+exits:   exit-a, exit-b
 ```
 
 Test containers run real `systemd` and `sshd` without `privileged: true`:

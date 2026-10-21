@@ -71,18 +71,18 @@ cluster:
   entry_port_base: 20000
   exit_port: 443
   entries:
-    - {name: sg, ip: 1.2.3.4}
-    - {name: jp, ip: 2.3.4.5}
+    - {name: entry-a, ip: 192.0.2.10}
+    - {name: entry-b, ip: 192.0.2.11}
   exits:
-    - {name: us, ip: 3.4.5.6}
-    - {name: uk, ip: 4.5.6.7}
+    - {name: exit-a, ip: 192.0.2.20}
+    - {name: exit-b, ip: 192.0.2.21}
 proxies: []
 proxy-providers:
   upstream:
     type: http
     url: "https://subscription.example.com/private-clash-url"
-    filter: "Singapore|United States"
-    exclude-filter: "Hong Kong"
+    filter: "Sample-A|Sample-B"
+    exclude-filter: "Sample-Excluded"
 # Optional: omit these groups to keep the existing PROXY/AUTO defaults.
 proxy-groups:
   - name: PROXY
@@ -141,22 +141,22 @@ Example:
 ```yaml
 cluster:
   entries:
-    - {name: sg, ip: 1.2.3.4}
-    - {name: jp, ip: 2.3.4.5}
+    - {name: entry-a, ip: 192.0.2.10}
+    - {name: entry-b, ip: 192.0.2.11}
   exits:
-    - {name: us, ip: 3.4.5.6}
-    - {name: uk, ip: 4.5.6.7}
+    - {name: exit-a, ip: 192.0.2.20}
+    - {name: exit-b, ip: 192.0.2.21}
 ```
 
 Derived client routes:
 
 ```text
-sg -> us
-sg -> uk
-jp -> us
-jp -> uk
-us direct
-uk direct
+entry-a -> exit-a
+entry-a -> exit-b
+entry-b -> exit-a
+entry-b -> exit-b
+exit-a direct
+exit-b direct
 ```
 
 ### Ports
@@ -176,12 +176,12 @@ direct exit port = cluster.exit_port
 For two exits and `cluster.entry_port_base=20000`:
 
 ```text
-sg -> us  sg:20000
-sg -> uk  sg:20001
-jp -> us  jp:20000
-jp -> uk  jp:20001
-us direct us:443
-uk direct uk:443
+entry-a -> exit-a  entry-a:20000
+entry-a -> exit-b  entry-a:20001
+entry-b -> exit-a  entry-b:20000
+entry-b -> exit-b  entry-b:20001
+exit-a direct exit-a:443
+exit-b direct exit-b:443
 ```
 
 Reef checks port availability but does not auto-select or mutate ports.
@@ -346,21 +346,21 @@ For example, each collection explicitly lists its upstream subscriptions:
 
 ```yaml
 proxy-providers:
-  xq:
+  pool-a:
     type: http
     upstreams:
-      - &xq {name: xq, url: "https://xq.example.com/private-clash-url"}
-      - &xq2 {name: xq2, url: "https://xq2.example.com/private-clash-url"}
-  lx:
+      - &source_a {name: source-a, url: "https://source-a.example.invalid/subscription"}
+      - &source_b {name: source-b, url: "https://source-b.example.invalid/subscription"}
+  pool-b:
     type: http
     upstreams:
-      - &lx {name: lx, url: "https://lx.example.com/private-clash-url"}
-  all:
+      - &source_c {name: source-c, url: "https://source-c.example.invalid/subscription"}
+  pool-c:
     type: http
-    upstreams: [*xq, *xq2, *lx]
+    upstreams: [*source_a, *source_b, *source_c]
 ```
 
-`all` is an ordinary collection name, with no implicit membership. YAML aliases
+`pool-c` is an ordinary collection name, with no implicit membership. YAML aliases
 are optional; repeating the same `{name, url}` mappings has the same behavior.
 Filters run against original node names, before the upstream name prefix and
 then `override.additional-prefix` / `additional-suffix` are applied. Reusing
@@ -402,18 +402,32 @@ client -> RELAY's selected node -> PROXY's selected exit -> destination
 ```
 
 This follows [Mihomo's native dialer-proxy semantics](https://wiki.metacubex.one/config/proxies/dialer-proxy/).
-`config.mihomo.example.yaml` is a complete three-exit example with placeholder credentials.
+`config.mihomo.example.yaml` illustrates two fictional exits with separate direct
+and relayed paths. Public examples use independent placeholder names, addresses,
+and credentials; they must not disclose private operator names or locations.
 
 Use `proxy-providers` for filtered subscription collections or inline nodes,
-one `RELAY-<exit>` group per exit for intermediate selection, and `PROXY` for
-exit selection. These names have no implicit chaining behavior: only the native
+one `RELAY | <exit>` group per exit for intermediate selection, and `PROXY` for
+exit selection. Each exit has two automatic protocol groups:
+`EXIT | <exit> | DIRECT` and `EXIT | <exit> | RELAY`. Direct paths connect
+to the exit server without an intermediate; they still use that server as their
+public exit. Each path uses distinct node names and probe history. Inline
+collections can share an anchored endpoint payload and use
+`override.additional-suffix` to distinguish the two paths. Only the relay
+collection adds `override.dialer-proxy`; the shared payload must not contain it.
+These names have no implicit chaining behavior: only the native
 `dialer-proxy` field creates the connection. Inline and HTTP exit collections can
 also use `override.dialer-proxy` to share one defined relay group. The generator applies overrides to the filtered
 snapshot and preserves the resulting `dialer-proxy` fields in both Mihomo outputs.
 
 Chains require explicit `proxy-groups` including `PROXY`. In the supplied example,
-`PROXY` contains only MEGABOX, sg1, and sg2. Each relay selector chooses from
-`xq`, `lx`, and `all`, ordinary `url-test` groups using their matching collections.
+`PROXY` offers the direct and relayed paths for sample exits A and B, plus
+`POOL | A`, `POOL | B`, and `POOL | C`. Pools are ordinary
+`url-test` groups using their matching collections. Selecting a pool in `PROXY`
+uses its selected node as the final exit, without a subsequent owned exit.
+Each relay selector chooses from those same pools and has no direct option.
+Upstream display names and pool names are configurable, including localized
+names in private configuration; public examples use English.
 Do not use `include-all` for these groups: it can create a cycle or offer an
 unintended exit. A relay can be a concrete node, a manual group, or a `url-test`
 group. Automatic tests of intermediate nodes measure their own connections,
@@ -422,14 +436,18 @@ are checked together for missing targets and cycles, including candidates that
 are not selected initially. There is no implicit direct fallback.
 
 When different exits need different intermediates, give each exit its own
-`dialer-proxy` group, such as `RELAY-MEGABOX`, `RELAY-sg1`, and `RELAY-sg2`,
+`dialer-proxy` group, such as `RELAY | A` and `RELAY | B`,
 instead of sharing the provider override. Each group keeps its own manual choice, so switching
 `PROXY` also switches to the corresponding intermediate without resetting it.
 The automatic groups remain visible so a client can pin a particular member.
-Exits choosing the same automatic group share that group's current node;
-`all` keeps its own selection across its explicitly combined membership.
+All references to the same pool share its current node, whether the pool is
+used as an exit or as an intermediate. `POOL | C` keeps its own selection
+across its explicitly combined membership.
 
-The example uses TCP exits (MEGABOX VLESS Reality and sg1/sg2 Trojan).
+The fictional endpoints demonstrate VLESS Reality, Trojan, and Hysteria2.
+Protocol selection is independent for direct and relayed paths. Hysteria2 exits
+require a relay capable of carrying their UDP transport. Exit probes include
+the currently selected intermediate; they do not search every possible pairing.
 Actual protocol, destination-port, and UDP support still depend on both services;
 successful configuration validation is not an end-to-end connectivity test.
 Existing Reef-managed entry ports already forward through a fixed exit and are

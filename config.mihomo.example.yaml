@@ -1,101 +1,138 @@
-# Copy the relevant sections into private config.yaml and fill in credentials.
+# All names, addresses, ports, and credentials below are fictional placeholders.
+# Copy the relevant sections into private config.yaml and fill in your values.
+# Preserve the existing secret and cluster section when migrating.
 # Run `just urls mihomo` for a local preview or `just web-deploy` to publish.
-# Keep the existing secret and cluster section when migrating an installation.
 secret: "replace_with_64_lowercase_hex_chars"
 
 proxy-providers:
-  xq:
+  pool-a:
     type: http
     upstreams:
-      - &xq {name: xq, url: "https://xq.example.com/private-clash-url"}
-      - &xq2 {name: xq2, url: "https://xq2.example.com/private-clash-url"}
-    filter: "Hong Kong|Singapore|Japan"
-    exclude-filter: "Remaining|Expires|Traffic"
+      - &source_a {name: source-a, url: "https://source-a.example.invalid/subscription"}
+      - &source_b {name: source-b, url: "https://source-b.example.invalid/subscription"}
+    filter: "Sample-A|Sample-B"
+    exclude-filter: "Sample-Excluded"
 
-  lx:
+  pool-b:
     type: http
     upstreams:
-      - &lx {name: lx, url: "https://lx.example.com/private-clash-url"}
-    filter: "Hong Kong|Singapore|Japan"
-    exclude-filter: "Remaining|Expires|Traffic"
+      - &source_c {name: source-c, url: "https://source-c.example.invalid/subscription"}
+    filter: "Sample-A|Sample-B"
+    exclude-filter: "Sample-Excluded"
 
-  # An ordinary collection: list each upstream explicitly, in any combination.
-  # Reuse the same names to keep node identities consistent across collections.
-  all:
+  # Combined membership is explicit; this name has no special meaning.
+  pool-c:
     type: http
-    upstreams: [*xq, *xq2, *lx]
-    filter: "Hong Kong|Singapore|Japan"
-    exclude-filter: "Remaining|Expires|Traffic"
+    upstreams: [*source_a, *source_b, *source_c]
+    filter: "Sample-A|Sample-B"
+    exclude-filter: "Sample-Excluded"
 
-  exits:
+  # Share credentials, but give direct and relayed paths distinct node names.
+  exit-a-direct:
     type: inline
-    payload:
-      - name: "US Los Angeles | MEGABOX"
+    override:
+      additional-suffix: " | DIRECT"
+    payload: &exit_a_nodes
+      - name: "Endpoint A | VLESS"
         type: vless
-        server: megabox.example.com
-        port: 8881
+        server: endpoint-a.example.invalid
+        port: 8443
         uuid: 00000000-0000-4000-8000-000000000001
         network: tcp
         tls: true
-        servername: addons.mozilla.org
+        servername: tls-a.example.invalid
         client-fingerprint: chrome
         flow: xtls-rprx-vision
         reality-opts:
-          public-key: "replace_with_server_reality_public_key"
+          public-key: "replace_with_endpoint_a_reality_public_key"
           short-id: ""
-        dialer-proxy: RELAY-MEGABOX
-      - name: "SG Singapore 1 | Alibaba Cloud"
+
+  exit-a-relay:
+    type: inline
+    payload: *exit_a_nodes
+    override:
+      additional-suffix: " | RELAY"
+      dialer-proxy: "RELAY | A"
+
+  exit-b-direct:
+    type: inline
+    override:
+      additional-suffix: " | DIRECT"
+    payload: &exit_b_nodes
+      - name: "Endpoint B | Trojan"
         type: trojan
-        server: sg1.example.com
-        port: 443
-        password: "replace_with_deployed_sg1_trojan_password"
-        sni: sg1.example.com
+        server: endpoint-b.example.invalid
+        port: 9443
+        password: "replace_with_endpoint_b_trojan_password"
+        sni: tls-b.example.invalid
         skip-cert-verify: false
         # For a self-signed certificate, supply its SHA-256 pin:
         # fingerprint: "replace_with_64_hex_certificate_fingerprint"
-        dialer-proxy: RELAY-sg1
-      - name: "SG Singapore 2 | Alibaba Cloud"
-        type: trojan
-        server: sg2.example.com
-        port: 443
-        password: "replace_with_deployed_sg2_trojan_password"
-        sni: sg2.example.com
+      - name: "Endpoint B | Hysteria2"
+        type: hysteria2
+        server: endpoint-b.example.invalid
+        port: 9443
+        password: "replace_with_endpoint_b_hysteria2_password"
+        sni: tls-b.example.invalid
         skip-cert-verify: false
-        dialer-proxy: RELAY-sg2
+        udp: true
+
+  exit-b-relay:
+    type: inline
+    payload: *exit_b_nodes
+    override:
+      additional-suffix: " | RELAY"
+      dialer-proxy: "RELAY | B"
 
 proxy-groups:
-  # The selected exit determines the public IP seen by the destination.
+  # Choose an exit path or use a subscription pool as the final exit.
   - name: PROXY
     type: select
-    use: [exits]
+    proxies:
+      - "EXIT | A | RELAY"
+      - "EXIT | A | DIRECT"
+      - "EXIT | B | RELAY"
+      - "EXIT | B | DIRECT"
+      - "POOL | A"
+      - "POOL | B"
+      - "POOL | C"
 
-  # Each exit remembers its own intermediate collection choice.
-  - name: RELAY-MEGABOX
-    type: select
-    proxies: [all, xq, lx]
-  - name: RELAY-sg1
-    type: select
-    proxies: [all, xq, lx]
-  - name: RELAY-sg2
-    type: select
-    proxies: [all, xq, lx]
+  # Protocol selection and probe history are independent for each path.
+  - name: "EXIT | A | RELAY"
+    type: url-test
+    use: [exit-a-relay]
+  - name: "EXIT | A | DIRECT"
+    type: url-test
+    use: [exit-a-direct]
+  - name: "EXIT | B | RELAY"
+    type: url-test
+    use: [exit-b-relay]
+  - name: "EXIT | B | DIRECT"
+    type: url-test
+    use: [exit-b-direct]
 
-  # Keep these groups visible for automatic selection or pinning in the client.
-  # url-test defaults: gstatic generate_204, interval 300, timeout 5000,
-  # tolerance 50, lazy true. Set native fields here to override them.
-  - name: xq
-    type: url-test
-    use: [xq]
-  - name: lx
-    type: url-test
-    use: [lx]
-  - name: all
-    type: url-test
-    use: [all]
+  # Each relayed exit remembers its own pool choice.
+  - name: "RELAY | A"
+    type: select
+    proxies: ["POOL | A", "POOL | B", "POOL | C"]
+  - name: "RELAY | B"
+    type: select
+    proxies: ["POOL | A", "POOL | B", "POOL | C"]
 
-# For a fixed intermediate, set an exit's dialer-proxy to "xq | actual node name".
-# Shared automatic groups share their selected node across exits that use them.
+  # The same pool can be an intermediate or a final exit.
+  - name: "POOL | A"
+    type: url-test
+    use: [pool-a]
+  - name: "POOL | B"
+    type: url-test
+    use: [pool-b]
+  - name: "POOL | C"
+    type: url-test
+    use: [pool-c]
+
+# Shared pools share their selected node across every reference.
+# DIRECT exit groups connect to the exit server without an intermediate.
+# Relays must support the exit transport, including UDP for Hysteria2.
 # Avoid include-all in relay groups: including exits can create a cycle.
-# HTTP providers can also supply exits with override.dialer-proxy.
 # QX relay conversion is pending. Publishing updates both Mihomo subscriptions;
 # the QX URL returns HTTP 503 until a compatible configuration is published.
