@@ -17,7 +17,7 @@ just test
 just urls
 just urls mihomo
 just config-yaml
-just web-deploy
+just web-deploy [gh-command]
 just web-build
 just web-dev
 ```
@@ -38,7 +38,7 @@ Their purpose:
   `build/subscriptions/mihomo/` and print their local paths for importing into a
   client. This local preview does not update the website or Quantumult X files.
 - `config-yaml`: print website configuration as YAML for `CONFIG_YAML`, excluding `ssh_private_key`, without modifying files or uploading secrets. Refuse to output in CI because the payload includes the root seed.
-- `web-deploy`: export website configuration, update the repository Secret `CONFIG_YAML` in `JoverZhang/reef`, then dispatch `deploy-website.yml` on `master`. Requires authenticated `gh`. Stop on export or upload failure, and pass the payload through stdin without printing it or putting it in command arguments. Returns after dispatch; deployment runs asynchronously in GitHub Actions.
+- `web-deploy [gh-command]`: export website configuration, update `CONFIG_YAML` in `JoverZhang/reef`, update the `VERSION` timestamp, and commit and push it to `master`. The push triggers `deploy-website.yml`. The optional command defaults to `gh` and supplies the GitHub API and Git credentials and commit identity. Requires zsh and an authenticated GitHub CLI command. Run in an interactive login zsh so configured aliases and functions are available. Requires clean tracked files on `master` at the current remote commit. Stop on failure and pass configuration through stdin without printing it or putting it in command arguments. Returns after push; deployment runs asynchronously in GitHub Actions.
 - `web-build`: install Web dependencies and run a production build.
 - `web-dev`: render Web artifacts, install Web dependencies, and start the local development server.
 
@@ -605,12 +605,27 @@ fetching upstreams, changing local files, or uploading secrets. Copy its stdout
 into the GitHub Secret `CONFIG_YAML`. Export is refused in CI. The old
 `REEF_WEB_ENV` and `REEF_EXTEND_YAML` Secrets are no longer used.
 
-For routine publishing, run `just web-deploy`. It uses the same exporter, updates
-`CONFIG_YAML`, and starts the website workflow on `master` only after the upload
-succeeds. Configuration stays in memory and goes to `gh secret set` through
-stdin; the command does not print it. Check the resulting deployment in GitHub
-Actions. Changes to private `config.yaml` can be published this way without a
-code commit; application code is built from `master`.
+For routine publishing, run `just web-deploy` from `master` with clean tracked
+files and no local commits ahead of or behind `JoverZhang/reef`'s `master`.
+It validates and exports configuration, fetches and checks the remote commit,
+and uploads `CONFIG_YAML` before changing `VERSION`. Configuration stays in
+memory and goes to `gh secret set` through stdin; the command does not print it.
+`VERSION` records the UTC publication time as `YYYYMMDDHHMMSS`. Only that file
+is committed, with both author and committer set to the selected GitHub account
+using its GitHub noreply address. Git configuration is not changed persistently.
+The recipe pushes the new commit directly to `JoverZhang/reef`'s `master` without
+force. The existing push trigger starts the website workflow; the recipe does
+not also dispatch a duplicate run. Check the resulting deployment in GitHub
+Actions. Commit and publish application changes before running this recipe.
+Private `config.yaml` stays untracked. If the push fails, the local publication
+commit remains available for inspection and retry; the recipe does not reset it.
+
+To choose a different GitHub account wrapper, run `just web-deploy gh-reef`.
+The recipe loads interactive login zsh configuration, so `gh-reef` can be an
+executable, function, or alias. The default remains `just web-deploy` using `gh`.
+The selected credentials need repository Contents write access for Git pushes
+and Secrets write access to update `CONFIG_YAML`. Actions write access is only
+needed to dispatch workflows manually.
 
 The workflow parses and validates the payload with the same configuration reader,
 registers masks for scalar values and decoded upstream URL credentials/tokens,

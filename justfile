@@ -43,13 +43,30 @@ urls target="all": setup
 config-yaml: setup
     {{python}} -m reef.cli.config_yaml
 
-web-deploy: setup
-    #!/usr/bin/env bash
+web-deploy gh-command="gh": setup
+    #!/usr/bin/env -S zsh -il
     set -euo pipefail
     reef_repo=JoverZhang/reef
     reef_config_yaml="$({{python}} -m reef.cli.config_yaml)"
-    printf '%s\n' "$reef_config_yaml" | gh secret set CONFIG_YAML --repo "$reef_repo"
-    gh workflow run deploy-website.yml --repo "$reef_repo" --ref master
+    if [[ "$(git branch --show-current)" != master ]] || ! git diff --quiet || ! git diff --cached --quiet; then
+        print -u2 'web-deploy requires master with no uncommitted tracked changes'
+        exit 1
+    fi
+    reef_identity="$({{gh-command}} api user --jq '[.login, "\(.id)+\(.login)@users.noreply.github.com"] | @tsv')"
+    IFS=$'\t' read -r reef_author_name reef_author_email <<< "$reef_identity"
+    reef_git_helper={{quote("!zsh -lic " + quote(gh-command + ' auth git-credential "$@"') + " --")}}
+    git -c credential.helper= -c credential.helper="$reef_git_helper" fetch "https://github.com/$reef_repo.git" master
+    if [[ "$(git rev-parse HEAD)" != "$(git rev-parse FETCH_HEAD)" ]]; then
+        print -u2 'web-deploy requires local master to match the remote master commit'
+        exit 1
+    fi
+    printf '%s\n' "$reef_config_yaml" | {{gh-command}} secret set CONFIG_YAML --repo "$reef_repo"
+    reef_version="$(date -u +%Y%m%d%H%M%S)"
+    printf '%s\n' "$reef_version" > VERSION
+    GIT_AUTHOR_NAME="$reef_author_name" GIT_AUTHOR_EMAIL="$reef_author_email" \
+        GIT_COMMITTER_NAME="$reef_author_name" GIT_COMMITTER_EMAIL="$reef_author_email" \
+        git commit --only -m "chore: publish website $reef_version" -- VERSION
+    git -c credential.helper= -c credential.helper="$reef_git_helper" push "https://github.com/$reef_repo.git" HEAD:refs/heads/master
 
 web-build: setup
     cd web && pnpm install --frozen-lockfile
