@@ -15,6 +15,7 @@ just smoke
 just delete
 just test
 just urls
+just urls mihomo
 just config-yaml
 just web-deploy
 just web-build
@@ -33,6 +34,9 @@ Their purpose:
 - `delete`: remove Reef-managed remote services and files. It asks for confirmation in an interactive shell and skips confirmation when `CI=1`.
 - `test`: run the local integration test matrix.
 - `urls`: render subscription artifacts and print path-only subscription URLs.
+- `urls mihomo`: render only the two Mihomo profiles into
+  `build/subscriptions/mihomo/` and print their local paths for importing into a
+  client. This local preview does not update the website or Quantumult X files.
 - `config-yaml`: print website configuration as YAML for `CONFIG_YAML`, excluding `ssh_private_key`, without modifying files or uploading secrets. Refuse to output in CI because the payload includes the root seed.
 - `web-deploy`: export website configuration, update the repository Secret `CONFIG_YAML` in `JoverZhang/reef`, then dispatch `deploy-website.yml` on `master`. Requires authenticated `gh`. Stop on export or upload failure, and pass the payload through stdin without printing it or putting it in command arguments. Returns after dispatch; deployment runs asynchronously in GitHub Actions.
 - `web-build`: install Web dependencies and run a production build.
@@ -73,10 +77,24 @@ cluster:
   exits:
     - {name: us, ip: 3.4.5.6}
     - {name: uk, ip: 4.5.6.7}
-subscriptions:
-  upstream_urls:
-    - "https://subscription.example.com/private-clash-url"
-  nodes: []
+proxies: []
+proxy-providers:
+  upstream:
+    type: http
+    url: "https://subscription.example.com/private-clash-url"
+    filter: "新加坡|美国"
+    exclude-filter: "香港"
+# Optional: omit these groups to keep the existing PROXY/AUTO defaults.
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [AUTO]
+    include-all: true
+  - name: AUTO
+    type: url-test
+    include-all: true
+    url: https://www.gstatic.com/generate_204
+    interval: 300
 ```
 
 Rules:
@@ -97,7 +115,7 @@ Rules:
   subscription URL tokens.
 - Deployment recipes and `smoke` require a Reef cluster. Subscription-only use
   requires no SSH key, runtime binaries, or remote nodes.
-- `cluster` and `subscriptions` are optional mappings. Their lists default to empty.
+- `cluster` and legacy `subscriptions` are optional mappings. Their lists default to empty.
   Ports default to 20000 and 443. Unknown fields, duplicate YAML keys, incorrect
   types, invalid nodes, and malformed YAML fail without echoing credentials.
 - `config.yaml` is ignored by git and written with mode `0600`.
@@ -311,7 +329,115 @@ The subscription renderer receives the derived route model and the loaded provid
 
 `web/generated/subscriptions.ts` is generated and ignored by git because it contains full subscription contents.
 
-### Upstream Subscription Nodes
+### Native Mihomo Input
+
+The preferred subscription input is the native Mihomo `proxies`,
+`proxy-providers`, and `proxy-groups` keys at the root of `config.yaml`, beside
+`secret` and the optional deployment `cluster`. No `sources`, multi-document
+YAML, custom routing language, or configurable output registry is introduced.
+The existing three profile IDs, filenames, URL tokens, DNS, and rule templates
+remain unchanged. `linux-server.yaml` routes all traffic through `PROXY` using
+`MATCH,PROXY`; `client.yaml` and `quantumult-x.conf` retain their rules.
+
+This first version accepts:
+
+- `proxies`: a list of ordinary Mihomo proxy mappings.
+- `proxy-providers`: named `http` or `inline` collections. HTTP providers use
+  `url`; inline providers use `payload`. `filter` and `exclude-filter` match
+  names using regular expressions; `exclude-type` lists protocol types separated
+  by `|`. `override.additional-prefix` and `override.additional-suffix` can
+  disambiguate node names. `override.dialer-proxy` applies the same intermediate
+  proxy or group to every selected node. HTTP `interval` is accepted, but Reef fetches on each
+  generation rather than running a background refresh timer.
+- `proxy-groups`: `select` and `url-test` groups, with `proxies` for node/group
+  names and `use` for provider names. The native `include-all`,
+  `include-all-proxies`, and `include-all-providers` selectors are also accepted.
+  Custom groups must contain `PROXY`, which is the existing templates' target.
+  With no custom groups, the existing `PROXY` and `AUTO` defaults remain.
+
+Reef resolves collections once per generation, filters before combining them,
+and embeds the resulting nodes and expanded group memberships in every output.
+Repeated references to the same HTTP URL share one response. Identical nodes
+with the same name can appear in multiple collections; conflicting definitions
+fail. Provider URLs never appear in generated subscriptions. Empty collections,
+empty groups, missing references, and cyclic group references fail before
+replacing artifacts. Fetch failures identify `upstream URL #N` and provider
+position, never the URL, credentials, or response body.
+HTTP requests use a 30-second socket timeout; an unavailable source still fails
+generation instead of falling back to an older snapshot.
+
+Quantumult X keeps the existing supported-node conversion contract below.
+Unsupported nodes and their group memberships are omitted with a count; a group
+left empty fails generation. `select` maps to `static`, and `url-test` to
+`url-latency-benchmark`. `PROXY` maps to the existing QX policy `Reef`. Latency
+groups support `url`, `interval`, `timeout` (up to 5000 ms), `tolerance`, and
+`lazy`; they must use one common probe URL and timeout for QX's general settings.
+With custom groups, managed entry policies also use this common probe.
+These QX restrictions are checked only when generating QX; the Mihomo preview
+allows independent probe settings and latency groups containing other groups.
+Other provider/group options, including provider health checks and file
+providers, remain unsupported and fail explicitly.
+
+### Mihomo Client-side Relay
+
+The first relay milestone publishes Mihomo profiles with independently selectable
+intermediate and exit proxies. Nodes are ordinary protocol endpoints, regardless
+of which side of a chain uses them. A proxy's native `dialer-proxy` names another
+proxy or a selection group. It belongs on the **exit** endpoint:
+
+```text
+client -> RELAY's selected node -> PROXY's selected exit -> destination
+```
+
+This follows [Mihomo's native dialer-proxy semantics](https://wiki.metacubex.one/config/proxies/dialer-proxy/).
+`config.mihomo.example.yaml` is a complete two-exit example with placeholder credentials.
+
+Use `proxy-providers` for filtered subscription collections or inline nodes,
+`RELAY` for intermediate selection, and `PROXY` for exit selection. These names
+have no implicit chaining behavior: only the native `dialer-proxy` field creates
+the connection. Inline and HTTP exit collections can both use
+`override.dialer-proxy: RELAY`. The generator applies overrides to the filtered
+snapshot and preserves the resulting `dialer-proxy` fields in both Mihomo outputs.
+
+Chains require explicit `proxy-groups` including `PROXY`. In the supplied example,
+`PROXY` contains only MEGABOX and sg1, and `RELAY` contains only subscription nodes.
+Do not use `include-all` for these two groups: it can create a cycle or offer an
+unintended exit. A relay can be a concrete node, a manual group, or a `url-test`
+group. Automatic tests of intermediate nodes measure their own connections,
+not every possible intermediate/exit combination. Both node and group references
+are checked together for missing targets and cycles, including candidates that
+are not selected initially. There is no implicit direct fallback.
+
+When different exits need different intermediates, give each exit its own
+`dialer-proxy` group, such as `RELAY-MEGABOX` and `RELAY-sg1`, instead of sharing
+the provider override. Each group keeps its own manual choice, so switching
+`PROXY` also switches to the corresponding intermediate without resetting it.
+
+The initial example uses TCP exits (MEGABOX VLESS Reality and sg1 Trojan).
+Actual protocol, destination-port, and UDP support still depend on both services;
+successful configuration validation is not an end-to-end connectivity test.
+Existing Reef-managed entry ports already forward through a fixed exit and are
+not used as ordinary intermediates in this example. A standalone sg1 definition
+must match the deployed endpoint; if its server credentials change, update it.
+
+Run `just urls mihomo` for a local preview, or `just web-deploy` to publish the
+two Mihomo subscriptions at their existing URLs. The fixed global and rule-based Mihomo
+templates keep their existing behavior. The rule-based profile can still route
+China destinations directly; only traffic assigned to `PROXY` uses the chain.
+When the resolved snapshot contains any `dialer-proxy`, normal generation renders
+only the two Mihomo profiles and reports that QX relay conversion is unavailable.
+After successful validation, it removes any stale local QX subscription file.
+The existing QX URL returns HTTP 503 with an explicit unsupported-relay message,
+so clients cannot mistake an unchained configuration for a successful update.
+It never strips the intermediate hop or silently drops chained exits.
+`just urls` prints only available subscription paths. Non-chain configurations
+retain all three outputs, including the same QX URL when relay settings are removed.
+
+The previous `subscriptions.upstream_urls` and `subscriptions.nodes` input
+continues to work for existing installations. It cannot be mixed with the new
+root subscription keys. New configurations should use the native keys.
+
+### Legacy Upstream Subscription Nodes
 
 `subscriptions.upstream_urls` optionally supplies an ordered list of HTTP(S)
 Clash/Mihomo YAML subscriptions.
@@ -386,10 +512,10 @@ poller: `just urls`, website builds, and other subscription rendering steps fetc
 fresh nodes; hosted contents change after the next successful website deployment.
 Upstream URLs may contain credentials and stay in private `config.yaml` / `CONFIG_YAML`.
 
-### Subscription Extension
+### Legacy Subscription Extension
 
-`subscriptions.nodes` in `config.yaml` is the optional list of standalone
-VLESS nodes. `config.example.yaml` documents the complete configuration.
+`subscriptions.nodes` in `config.yaml` is the legacy optional list of standalone
+VLESS nodes. New configurations use ordinary Mihomo `proxies` instead.
 This is Reef's client-independent input format; it describes the endpoint and
 protocol settings once, then Reef generates Mihomo and Quantumult X syntax.
 No encoding or subscription hosting is required.
@@ -500,8 +626,11 @@ For subscription-only use, the complete payload can be:
 
 ```yaml
 secret: "<64 lowercase hex chars>"
-subscriptions:
-  upstream_urls:
-    - "https://subscription.example.com/private-clash-url"
-    - "https://another.example.com/private-clash-url"
+proxy-providers:
+  upstream-a:
+    type: http
+    url: "https://subscription.example.com/private-clash-url"
+  upstream-b:
+    type: http
+    url: "https://another.example.com/private-clash-url"
 ```

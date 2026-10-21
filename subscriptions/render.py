@@ -8,6 +8,8 @@ from typing import Any
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+from subscriptions.mihomo import PROBE_URL, qx_policies, resolve_groups, validate_chains
+
 
 SUBSCRIPTIONS_DIR = Path(__file__).resolve().parent
 REQUIRED_CONTEXT = {
@@ -43,17 +45,19 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
     qx_pairs = proxy_metadata(context, profile_id="quantumult-x")
     upstream = context["upstream_proxies"]
     qx_upstream = context["qx_upstream"]
-    if not qx_pairs and not qx_upstream:
+    qx_enabled = any(profile["id"] == "quantumult-x" for profile in context["profiles"])
+    if qx_enabled and not qx_pairs and not qx_upstream:
         raise ValueError("subscription-only mode requires a Quantumult X-compatible upstream node")
     reserved_names = (
-        {"PROXY", "Reef", "AUTO", "DIRECT", "REJECT", "direct", "reject"}
+        {"PROXY", "Reef", "AUTO", "DIRECT", "REJECT", "GLOBAL", "direct", "reject"}
         | {pair["name"] for pair in pairs + qx_pairs}
         | {f"entry-{node['id']}" for node in context["entries"]}
+        | {group["name"] for group in context.get("proxy_groups", [])}
     )
     for index, proxy in enumerate(upstream, start=1):
         if proxy["name"] in reserved_names:
             raise ValueError(f"upstream node {index} name conflicts with a local node or policy")
-    if len(qx_upstream) < len(upstream):
+    if qx_enabled and len(qx_upstream) < len(upstream):
         print(
             f"quantumult-x: skipped {len(upstream) - len(qx_upstream)} upstream node(s) "
             "with unsupported protocols or options",
@@ -63,6 +67,7 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
     qx_proxy_names = [node["name"] for node in qx_pairs + qx_upstream]
     entry_groups = _entry_groups(context["entries"], pairs)
     qx_entry_groups = _entry_groups(context["entries"], qx_pairs)
+    groups, policies, probe_url, probe_timeout = _custom_groups(context, pairs, qx_pairs)
     entry_override_rules = _entry_override_rules(entry_groups)
     qx_entry_override_rules = _qx_entry_override_rules(qx_entry_groups)
     entry_direct_rules = [
@@ -88,6 +93,10 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
                 "qx_proxy_names": qx_proxy_names,
                 "entry_groups": entry_groups,
                 "qx_entry_groups": qx_entry_groups,
+                "groups": groups,
+                "qx_policies": policies,
+                "probe_url": probe_url,
+                "probe_timeout": probe_timeout,
                 "entry_override_rules": entry_override_rules,
                 "qx_entry_override_rules": qx_entry_override_rules,
                 "entry_direct_rules": entry_direct_rules,
@@ -116,10 +125,11 @@ def validate(profiles: list[dict[str, str]], context: dict[str, Any]) -> None:
     proxy_names = [node["name"] for node in pairs + upstream]
     entry_groups = _entry_groups(context["entries"], pairs)
     qx_entry_groups = _entry_groups(context["entries"], qx_pairs)
+    groups, policies, probe_url, probe_timeout = _custom_groups(context, pairs, qx_pairs)
 
     client = yaml.safe_load(by_id["client"]["body"])
     _check_mihomo_proxy_shape(client, [pair["name"] for pair in pairs], upstream)
-    _check_groups(client, proxy_names, "client.yaml")
+    _check_groups(client, proxy_names, "client.yaml", groups)
     _check_entry_groups(client, entry_groups, "client.yaml")
     expected_entry_rules = _entry_override_rules(entry_groups)
     expected_direct_rules = _direct_rules(pairs)
@@ -137,14 +147,44 @@ def validate(profiles: list[dict[str, str]], context: dict[str, Any]) -> None:
 
     linux = yaml.safe_load(by_id["linux-server"]["body"])
     _check_mihomo_proxy_shape(linux, [pair["name"] for pair in pairs], upstream)
-    _check_groups(linux, proxy_names, "linux-server.yaml")
+    _check_groups(linux, proxy_names, "linux-server.yaml", groups)
 
+    if "quantumult-x" not in by_id:
+        return
     _check_quantumult_x(
         by_id["quantumult-x"]["body"],
         qx_pairs,
         qx_entry_groups,
         qx_upstream,
+        policies,
     )
+    if groups:
+        for line in (f"server_check_url={probe_url}", f"server_check_timeout={probe_timeout}"):
+            if line not in by_id["quantumult-x"]["body"].splitlines():
+                raise ValueError("quantumult-x health-check settings mismatch")
+
+
+def _custom_groups(context: dict, pairs: list[dict], qx_pairs: list[dict]) -> tuple:
+    specs = context.get("proxy_groups", [])
+    entry_names = {f"entry-{node['id']}" for node in context["entries"]}
+    if any(group["name"] in entry_names for group in specs):
+        raise ValueError("proxy-group name conflicts with a managed entry policy")
+    groups = resolve_groups(
+        specs, context.get("provider_members", {}),
+        [node["name"] for node in pairs] + context.get("top_proxy_names", []),
+        [node["name"] for node in pairs + context["upstream_proxies"]],
+    )
+    validate_chains(context["upstream_proxies"], groups, [node["name"] for node in pairs])
+    if not any(profile["id"] == "quantumult-x" for profile in context["profiles"]):
+        return groups, [], PROBE_URL, 5000
+    qx_by_route = {(node["route_id"], node["provider_id"]): node["name"] for node in qx_pairs}
+    aliases = {
+        node["name"]: qx_by_route[(node["route_id"], node["provider_id"])]
+        for node in pairs if (node["route_id"], node["provider_id"]) in qx_by_route
+    }
+    aliases.update({node["name"]: node["name"] for node in context["qx_upstream"]})
+    policies, url, timeout = qx_policies(groups, aliases)
+    return groups, policies, url, timeout
 
 
 def _require_context(context: dict[str, Any]) -> None:
@@ -309,7 +349,11 @@ def _check_groups(
     doc: dict[str, Any],
     proxy_names: list[str],
     label: str,
+    expected: list[dict] | None = None,
 ) -> None:
+    if expected:
+        _expect(doc["proxy-groups"][:len(expected)], expected, f"{label} custom groups mismatch")
+        return
     groups = _group_by_name(doc)
     _expect(groups["PROXY"]["type"], "select", f"{label} PROXY must be manual")
     _expect(groups["PROXY"]["proxies"], ["AUTO"] + proxy_names, f"{label} PROXY choices mismatch")
@@ -339,6 +383,7 @@ def _check_quantumult_x(
     pairs: list[dict[str, Any]],
     entry_groups: list[dict[str, Any]],
     upstream: list[dict[str, str]],
+    policies: list[str] | None = None,
 ) -> None:
     lines = [line.strip() for line in body.splitlines() if line.strip()]
     required_sections = {
@@ -375,28 +420,35 @@ def _check_quantumult_x(
         if f"tls-cert-sha256={pair['cert_fingerprint_hex']}" not in line:
             raise ValueError(f"quantumult-x missing tls-cert-sha256 for {pair['name']}")
 
-    top_policy = next((line for line in lines if line.startswith("static=Reef,")), "")
-    proxy_names = [node["name"] for node in pairs + upstream]
-    _expect(
-        top_policy,
-        "static=Reef, AUTO, " + ", ".join(proxy_names),
-        "quantumult-x Reef choices mismatch",
-    )
+    policy_start = lines.index("[policy]") + 1
+    if policies:
+        _expect(lines[policy_start:policy_start + len(policies)], policies,
+                "quantumult-x custom policies mismatch")
+        policy_lines = lines[policy_start + len(policies):lines.index("[filter_remote]")]
+        _expect(len(policy_lines), len(entry_groups), "quantumult-x entry policy count mismatch")
+    else:
+        top_policy = next((line for line in lines if line.startswith("static=Reef,")), "")
+        proxy_names = [node["name"] for node in pairs + upstream]
+        _expect(
+            top_policy,
+            "static=Reef, AUTO, " + ", ".join(proxy_names),
+            "quantumult-x Reef choices mismatch",
+        )
 
-    policy_lines = [line for line in lines if line.startswith("url-latency-benchmark=")]
-    _expect(
-        len(policy_lines),
-        1 + len(entry_groups),
-        "quantumult-x policy count mismatch",
-    )
-    auto_policy = next(
-        (line for line in policy_lines if line.startswith("url-latency-benchmark=AUTO,")), ""
-    )
-    _expect(
-        auto_policy.split(", ")[1:-2],
-        proxy_names,
-        "quantumult-x AUTO choices mismatch",
-    )
+        policy_lines = [line for line in lines if line.startswith("url-latency-benchmark=")]
+        _expect(
+            len(policy_lines),
+            1 + len(entry_groups),
+            "quantumult-x policy count mismatch",
+        )
+        auto_policy = next(
+            (line for line in policy_lines if line.startswith("url-latency-benchmark=AUTO,")), ""
+        )
+        _expect(
+            auto_policy.split(", ")[1:-2],
+            proxy_names,
+            "quantumult-x AUTO choices mismatch",
+        )
 
     for entry_group in entry_groups:
         matching = [

@@ -1,0 +1,81 @@
+# Copy the relevant sections into private config.yaml and fill in credentials.
+# Run `just urls mihomo` for a local preview or `just web-deploy` to publish.
+# Keep the existing secret and cluster section when migrating an installation.
+secret: "replace_with_64_lowercase_hex_chars"
+
+proxy-providers:
+  relay-a:
+    type: http
+    url: "https://subscription-a.example.com/private-clash-url"
+    filter: "香港|新加坡|日本"
+    exclude-filter: "剩余|到期|流量"
+    override:
+      additional-prefix: "A | "
+
+  relay-b:
+    type: http
+    url: "https://subscription-b.example.com/private-clash-url"
+    filter: "香港|新加坡|日本"
+    exclude-filter: "剩余|到期|流量"
+    override:
+      additional-prefix: "B | "
+
+  exits:
+    type: inline
+    # This field belongs on the exit nodes, not on the intermediate nodes.
+    override:
+      dialer-proxy: RELAY
+    payload:
+      - name: MEGABOX
+        type: vless
+        server: megabox.example.com
+        port: 8881
+        uuid: 00000000-0000-4000-8000-000000000001
+        network: tcp
+        tls: true
+        servername: addons.mozilla.org
+        client-fingerprint: chrome
+        flow: xtls-rprx-vision
+        reality-opts:
+          public-key: "replace_with_server_reality_public_key"
+          short-id: ""
+      - name: sg1
+        type: trojan
+        server: sg1.example.com
+        port: 443
+        password: "replace_with_deployed_trojan_password"
+        sni: sg1.example.com
+        skip-cert-verify: false
+        # If sg1 uses a self-signed certificate, supply its SHA-256 pin:
+        # fingerprint: "replace_with_64_hex_certificate_fingerprint"
+
+proxy-groups:
+  # Website sees the selected exit's IP. Only exits belong here.
+  - name: PROXY
+    type: select
+    use: [exits]
+
+  # Choose a specific intermediate, or RELAY-AUTO for automatic selection.
+  - name: RELAY
+    type: select
+    proxies: [RELAY-AUTO]
+    use: [relay-a, relay-b]
+
+  - name: RELAY-AUTO
+    type: url-test
+    use: [relay-a, relay-b]
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    timeout: 5000
+    tolerance: 50
+    lazy: true
+
+# These native fields also allow a fixed intermediate:
+#   dialer-proxy: "A | actual node name"
+# An exit collection can be type: http with URL/filter instead of inline/payload.
+# If the exits need different intermediates, remove the exits provider's override
+# and set dialer-proxy: RELAY-MEGABOX / RELAY-sg1 on the corresponding payload
+# nodes. Define each group like RELAY, with its own preferred node first.
+# Do not use include-all in RELAY: it would include exits and create a cycle.
+# QX relay conversion is pending. Publishing updates both Mihomo subscriptions;
+# the QX URL returns HTTP 503 until a compatible configuration is published.

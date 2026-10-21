@@ -25,7 +25,7 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 
   return new Response(subscription.body, {
-    status: 200,
+    status: subscription.status,
     headers: {
       ...headers,
       "Content-Type": subscription.contentType,

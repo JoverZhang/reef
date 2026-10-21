@@ -18,28 +18,65 @@ cluster:
     - {name: us, ip: 192.0.2.20}
     - {name: uk, ip: 192.0.2.21}
 
-subscriptions:
-  # HTTP(S) Clash/Mihomo subscriptions, fetched in list order.
-  # Failed sources stop generation and report their 1-based URL number.
-  upstream_urls: []
-  #  - "https://subscription.example.com/private-clash-url"
-  #  - "https://another.example.com/private-clash-url"
+# Ordinary Mihomo proxy definitions; no Reef-specific node syntax is needed.
+proxies: []
+#  - name: extra-vless
+#    type: vless
+#    server: proxy.example.com
+#    port: 443
+#    uuid: 00000000-0000-4000-8000-000000000001
+#    network: tcp
+#    tls: true
+#    servername: certificate.example.com
+#    client-fingerprint: chrome
+#    reality-opts:
+#      public-key: "replace_with_server_reality_public_key"
+#      short-id: ""
+#    flow: xtls-rprx-vision
 
-  # Standalone nodes in Reef's common format; see docs/DESIGN.md for all fields.
-  nodes: []
-  #  - name: extra-vless
-  #    protocol: vless
-  #    server: proxy.example.com
-  #    port: 443
-  #    uuid: 00000000-0000-4000-8000-000000000001
-  #    transport: {type: tcp}
-  #    tls:
-  #      sni: certificate.example.com
-  #      verify: true
-  #      client_fingerprint: chrome
-  #      reality:
-  #        public_key: "replace_with_server_reality_public_key"
-  #        short_id: ""
-  #    flow: xtls-rprx-vision
+# Collections are resolved at generation time. URLs stay out of all outputs.
+# Fetch errors stop generation and report only the URL/provider positions.
+proxy-providers: {}
+#  overseas:
+#    type: http
+#    url: "https://subscription.example.com/private-clash-url"
+#    interval: 3600
+#    filter: "新加坡|美国"
+#    exclude-filter: "香港"
+#    override:
+#      additional-prefix: "upstream-1 | "
+#  owned:
+#    type: inline
+#    payload:
+#      - name: own-trojan
+#        type: trojan
+#        server: proxy.example.com
+#        port: 8443
+#        password: "replace_with_server_password"
+#        sni: proxy.example.com
+
+# The three fixed profiles route through PROXY. Rules/DNS stay in the templates.
+# Omitting proxy-groups keeps the existing PROXY/AUTO defaults.
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [AUTO]
+    include-all: true
+  - name: AUTO
+    type: url-test
+    include-all: true
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    timeout: 5000
+    tolerance: 50
+    lazy: true
+
+# To select collections explicitly, replace include-all with:
+#    use: [overseas, owned]
+# First-version provider/group options are listed in docs/DESIGN.md.
+# For independently selectable intermediate and exit nodes, see
+# config.mihomo.example.yaml and generate a preview with `just urls mihomo`.
+# Existing subscriptions.upstream_urls / subscriptions.nodes still work, but
+# cannot be mixed with the native keys above.
 
 # CI: `just config-yaml` prints the payload for the CONFIG_YAML GitHub Secret.

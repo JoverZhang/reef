@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from cryptography.x509.oid import NameOID
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from subscriptions.extension import parse_extend_nodes
+from subscriptions.mihomo import INPUT_KEYS, load_providers as load_proxy_providers, validate_input
 from subscriptions.upstream import (
     load_nodes as load_upstream_nodes,
     quantumult_x_nodes,
@@ -32,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE_DIR = "/opt/reef"
 SECRET_RE = re.compile(r"^[0-9a-f]{64}$")
 ENTRY_OVERRIDE_ADDRESS = "127.0.0.1"
+CONFIG_FIELDS = {"secret", "ssh_private_key", "cluster", "subscriptions"} | INPUT_KEYS
 # NIST P-256 group order. cryptography exposes SECP256R1(), but not the scalar
 # field order needed to derive a deterministic private key from the root seed.
 P256_ORDER = int("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
@@ -76,6 +79,8 @@ class Config:
     entry_override_base_domain: str | None
     upstream_urls: list[str]
     extend_proxies: list[dict[str, Any]]
+    proxy_providers: dict[str, dict[str, Any]]
+    proxy_groups: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -149,7 +154,7 @@ def parse_config_yaml(content: str | bytes) -> dict[str, Any]:
         document = yaml.load(content, Loader=_ConfigLoader)
     except (yaml.YAMLError, UnicodeError):
         raise ValueError("config.yaml must be valid YAML") from None
-    return _config_mapping(document, {"secret", "ssh_private_key", "cluster", "subscriptions"}, "config.yaml")
+    return _config_mapping(document, CONFIG_FIELDS, "config.yaml")
 
 
 def load_config(path: Path | None = None) -> dict[str, Any]:
@@ -179,7 +184,7 @@ def _config_mapping(value: Any, fields: set[str], label: str) -> dict[str, Any]:
 
 
 def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config:
-    values = _config_mapping(values, {"secret", "ssh_private_key", "cluster", "subscriptions"}, "config.yaml")
+    values = _config_mapping(values, CONFIG_FIELDS, "config.yaml")
     secret = values.get("secret")
     if not isinstance(secret, str) or not SECRET_RE.fullmatch(secret):
         raise ValueError("secret must be a string of exactly 64 lowercase hex characters")
@@ -187,11 +192,16 @@ def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config
         "entries", "exits", "entry_port_base", "exit_port", "entry_override_base_domain",
     }, "cluster")
     subscriptions = _config_mapping(values.get("subscriptions", {}), {"upstream_urls", "nodes"}, "subscriptions")
+    if "subscriptions" in values and INPUT_KEYS.intersection(values):
+        raise ValueError("subscriptions cannot be mixed with native Mihomo input keys")
+    validate_input(values)
     entries = _parse_nodes(cluster.get("entries", []), "entry")
     exits = _parse_nodes(cluster.get("exits", []), "exit")
     upstream_urls = _parse_upstream_urls(subscriptions.get("upstream_urls", []))
     extend_proxies = parse_extend_nodes(subscriptions.get("nodes", []))
-    if not exits and (entries or not (upstream_urls or extend_proxies)):
+    extend_proxies.extend(values.get("proxies", []))
+    proxy_providers = values.get("proxy-providers", {})
+    if not exits and (entries or not (upstream_urls or extend_proxies or proxy_providers)):
         raise ValueError("cluster.exits requires at least one node unless using standalone subscriptions")
     if require_ssh and not exits:
         raise ValueError("deployment recipes require a Reef cluster with at least one node in cluster.exits")
@@ -225,6 +235,8 @@ def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config
         entry_override_base_domain=entry_override_base_domain,
         upstream_urls=upstream_urls,
         extend_proxies=extend_proxies,
+        proxy_providers=proxy_providers,
+        proxy_groups=values.get("proxy-groups", []),
     )
 
 
@@ -851,38 +863,63 @@ def service_names_for_node(model: Model, node: Node) -> list[str]:
     return services
 
 
-def render_subscriptions(model: Model, host_map_path: Path | None = None) -> list[dict[str, str]]:
+def render_subscriptions(
+    model: Model, host_map_path: Path | None = None, *, mihomo_only: bool = False,
+) -> list[dict[str, str]]:
     build_dir = project_path("build", "subscriptions")
     _ensure_private_dir(project_path("build"))
     _ensure_private_dir(build_dir)
+    if mihomo_only:
+        build_dir = build_dir / "mihomo"
+        _ensure_private_dir(build_dir)
     host_map = _load_json_file(host_map_path or _env_path("TEST_HOST_MAP"))
     renderer = load_subscription_renderer()
     context = subscription_context(model, host_map)
     context["upstream_proxies"] = load_upstream_nodes(
         model.config.upstream_urls, model.config.extend_proxies
     )
-    context["qx_upstream"] = quantumult_x_nodes(context["upstream_proxies"])
+    context["top_proxy_names"] = [node["name"] for node in context["upstream_proxies"]]
+    provider_nodes, context["provider_members"] = load_proxy_providers(model.config.proxy_providers)
+    nodes_by_name = {node["name"]: node for node in context["upstream_proxies"]}
+    for node in provider_nodes:
+        if node["name"] in nodes_by_name and nodes_by_name[node["name"]] != node:
+            raise ValueError("proxy-provider node conflicts with a top-level proxy")
+        nodes_by_name.setdefault(node["name"], node)
+    context["upstream_proxies"] = list(nodes_by_name.values())
+    has_chain = any("dialer-proxy" in node for node in context["upstream_proxies"])
+    omitted = []
+    if mihomo_only or has_chain:
+        omitted = [p for p in context["profiles"] if p["id"] == "quantumult-x"]
+        context["profiles"] = [p for p in context["profiles"] if p not in omitted]
+    else:
+        context["qx_upstream"] = quantumult_x_nodes(context["upstream_proxies"])
     rendered = renderer.render(context)
     if hasattr(renderer, "validate"):
         renderer.validate(rendered, context)
 
     profiles = []
-    secret = bytes.fromhex(model.config.secret_hex)
     for profile in rendered:
         body = profile["body"]
         output = build_dir / profile["output"]
         _write_private(output, body)
-        token = derive_text(secret, "subscription-url", profile["id"], length=24)
         profiles.append(
             {
                 "id": profile["id"],
-                "token": token,
+                "token": _subscription_token(model, profile["id"]),
                 "output": str(output),
                 "content_type": profile.get("content_type", "text/plain; charset=utf-8"),
                 "body": body,
             }
         )
+    for profile in omitted:
+        (build_dir / profile["output"]).unlink(missing_ok=True)
+    if has_chain and not mihomo_only:
+        print("Quantumult X relay conversion is unavailable; generated Mihomo subscriptions only.", file=sys.stderr)
     return profiles
+
+
+def _subscription_token(model: Model, profile_id: str) -> str:
+    return derive_text(bytes.fromhex(model.config.secret_hex), "subscription-url", profile_id, length=24)
 
 
 def subscription_proxy_metadata(
@@ -922,6 +959,9 @@ def subscription_context(model: Model, host_map: dict[str, Any] | None = None) -
         "entry_override_base_domain": model.config.entry_override_base_domain,
         "upstream_proxies": [],
         "qx_upstream": [],
+        "proxy_groups": model.config.proxy_groups,
+        "provider_members": {},
+        "top_proxy_names": [],
     }
 
 
@@ -960,9 +1000,18 @@ def render_web(model: Model) -> list[dict[str, str]]:
             "token": p["token"],
             "contentType": p["content_type"],
             "body": p["body"],
+            "status": 200,
         }
         for p in profiles
     ]
+    if not any(p["id"] == "quantumult-x" for p in profiles):
+        items.append({
+            "id": "quantumult-x",
+            "token": _subscription_token(model, "quantumult-x"),
+            "contentType": "text/plain; charset=utf-8",
+            "body": "Quantumult X relay conversion is not supported yet. Use a Mihomo subscription.\n",
+            "status": 503,
+        })
     _write_private(
         out,
         "import 'server-only';\n\n"
@@ -971,6 +1020,7 @@ def render_web(model: Model) -> list[dict[str, str]]:
         "  token: string;\n"
         "  contentType: string;\n"
         "  body: string;\n"
+        "  status: 200 | 503;\n"
         "};\n\n"
         f"export const subscriptions: GeneratedSubscription[] = {json.dumps(items, indent=2)};\n",
     )
