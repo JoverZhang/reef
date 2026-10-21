@@ -27,7 +27,7 @@ proxy-providers:
     filter: "Sample-A|Sample-B"
     exclude-filter: "Sample-Excluded"
 
-  # The provider key is the display name used by EXIT and RELAY groups.
+  # The provider key is the display name used by DIRECT and RELAY paths.
   Endpoint A:
     type: inline
     payload:
@@ -66,15 +66,16 @@ proxy-providers:
         skip-cert-verify: false
         udp: true
 
-# This replaces explicit proxy-groups. The first pool is each exit's default.
-# Groups follow provider names, without additional aliases or display names.
+# This replaces explicit proxy-groups. Paths follow the listed exit/pool order.
+# Path names follow provider names, without additional aliases or display names.
 relay:
   Endpoint A: [pool-a, pool-b, pool-c]
   Endpoint B: [pool-c, pool-a, pool-b]
 
-# PROXY offers EXIT | Endpoint A | RELAY and Endpoint A | VLESS | DIRECT.
-# Endpoint B has multiple protocols, so both paths get automatic EXIT groups.
-# RELAY | Endpoint A and RELAY | Endpoint B select their intermediate pool.
+# PROXY offers RELAY | Endpoint A | pool-a, pool-b, pool-c, then DIRECT | Endpoint A.
+# Each Endpoint A path is a single proxy, without an extra group.
+# Endpoint B paths follow the same naming rule and use automatic protocol groups.
+# Each RELAY path points directly to its POOL; PROXY is the only manual selector.
 # POOL | pool-a, POOL | pool-b, and POOL | pool-c also appear in PROXY as exits.
 # Shared pools share their selected node across every reference.
 # DIRECT paths connect to the exit server without an intermediate.

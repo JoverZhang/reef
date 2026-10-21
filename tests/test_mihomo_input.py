@@ -364,7 +364,25 @@ class MihomoInputTests(unittest.TestCase):
             "relay": {"Endpoint A": ["pool-b", "pool-a"], "Endpoint B": ["pool-a", "pool-b"]},
         }
 
-    def test_automatic_relay_uses_endpoint_names_and_collapses_only_single_direct_paths(self):
+    def test_single_endpoint_paths_are_nodes_in_both_profiles(self):
+        config = {
+            "secret": SECRET,
+            "proxy-providers": {
+                "pool-a": {"type": "inline", "payload": [NODES[0]]},
+                "Endpoint A": {"type": "inline", "payload": [LOCAL]},
+            },
+            "relay": {"Endpoint A": ["pool-a"]},
+        }
+        for profile in self.generate(config, mihomo_only=True):
+            doc = yaml.safe_load(profile["body"])
+            nodes = {node["name"]: node for node in doc["proxies"]}
+            groups = {group["name"]: group for group in doc["proxy-groups"]}
+            for choice in groups["PROXY"]["proxies"]:
+                if not choice.startswith("POOL | "):
+                    self.assertIn(choice, nodes, "single-endpoint paths must not wrap a node in a group")
+            self.assertEqual(set(groups), {"PROXY", "POOL | pool-a"})
+
+    def test_automatic_relay_flattens_paths_and_collapses_single_endpoints(self):
         config = self.automatic_relay_config()
         original = copy.deepcopy(config)
         with patch.object(upstream, "urlopen", return_value=self.response()) as fetch:
@@ -377,32 +395,35 @@ class MihomoInputTests(unittest.TestCase):
             groups = {g["name"]: g for g in doc["proxy-groups"]}
             nodes = {n["name"]: n for n in doc["proxies"]}
             self.assertEqual(groups["PROXY"]["proxies"], [
-                "EXIT | Endpoint A | RELAY", "Endpoint A | Trojan | DIRECT",
-                "EXIT | Endpoint B | RELAY", "EXIT | Endpoint B | DIRECT",
+                "RELAY | Endpoint A | pool-b", "RELAY | Endpoint A | pool-a", "DIRECT | Endpoint A",
+                "RELAY | Endpoint B | pool-a", "RELAY | Endpoint B | pool-b", "DIRECT | Endpoint B",
                 "POOL | pool-a", "POOL | pool-b",
             ])
-            self.assertNotIn("EXIT | Endpoint A | DIRECT", groups)
+            self.assertEqual([g["name"] for g in groups.values() if g["type"] == "select"], ["PROXY"])
             for endpoint, pools in config["relay"].items():
-                self.assertEqual(groups[f"RELAY | {endpoint}"]["proxies"], [f"POOL | {p}" for p in pools])
                 spec = config["proxy-providers"][endpoint]
-                for path in ("DIRECT", "RELAY"):
+                for pool in [*pools, None]:
+                    path = f"RELAY | {endpoint} | {pool}" if pool else f"DIRECT | {endpoint}"
                     members = []
                     for source in spec["payload"]:
-                        name = f"{endpoint} | {source['name']} | {path}"
+                        name = path if len(spec["payload"]) == 1 else f"{path} | {source['name']}"
                         expected = {**source, "name": name}
-                        if path == "RELAY":
-                            expected["dialer-proxy"] = f"RELAY | {endpoint}"
+                        if pool:
+                            expected["dialer-proxy"] = f"POOL | {pool}"
                         self.assertEqual(nodes[name], expected)
                         members.append(name)
-                    if path == "RELAY" or len(members) > 1:
-                        group = groups[f"EXIT | {endpoint} | {path}"]
+                    if len(members) > 1:
+                        group = groups[path]
                         self.assertEqual(group["type"], "url-test")
                         self.assertEqual(group["proxies"], members)
                         self.assertEqual(group["interval"], 300)
+                    else:
+                        self.assertNotIn(path, groups)
+                    self.assertIn(path, groups["PROXY"]["proxies"])
             self.assertEqual(groups["POOL | pool-a"]["proxies"], [NODES[0]["name"]])
             self.assertEqual(groups["POOL | pool-b"]["proxies"], [NODES[1]["name"]])
             self.assertEqual(nodes[NODES[0]["name"]], NODES[0])
-            self.assertEqual(len(nodes), 8)
+            self.assertEqual(len(nodes), 11)
             self.assertNotIn(URL, profile["body"])
         generated = (self.root / "web/generated/subscriptions.ts").read_text()
         web = json.loads(generated.split("GeneratedSubscription[] = ", 1)[1].rstrip(";\n"))
@@ -419,18 +440,23 @@ class MihomoInputTests(unittest.TestCase):
             doc = yaml.safe_load(self.generate(config)[0]["body"])
         groups = {g["name"]: g for g in doc["proxy-groups"]}
         self.assertNotIn("Endpoint A", str(doc))
-        self.assertEqual(groups["EXIT | Endpoint C | DIRECT"]["proxies"], [
-            "Endpoint C | Trojan | DIRECT", "Endpoint C | HTTP | DIRECT",
+        self.assertEqual(groups["DIRECT | Endpoint C"]["proxies"], [
+            "DIRECT | Endpoint C | Trojan", "DIRECT | Endpoint C | HTTP",
         ])
-        self.assertIn("Endpoint B | Trojan | DIRECT", groups["PROXY"]["proxies"])
-        self.assertNotIn("EXIT | Endpoint B | DIRECT", groups)
-        self.assertEqual(groups["RELAY | Endpoint C"]["proxies"], ["POOL | pool-b", "POOL | pool-a"])
-        # Filtering a formerly multi-endpoint provider to one removes its group.
+        self.assertEqual(groups["PROXY"]["proxies"][:3], [
+            "RELAY | Endpoint C | pool-b", "RELAY | Endpoint C | pool-a", "DIRECT | Endpoint C",
+        ])
+        for path in ("DIRECT | Endpoint B", "RELAY | Endpoint B | pool-a", "RELAY | Endpoint B | pool-b"):
+            self.assertIn(path, groups["PROXY"]["proxies"])
+            self.assertNotIn(path, groups)
+        choices = groups["PROXY"]["proxies"]
+        # Filtering to one endpoint removes every path group but preserves its display name.
         providers["Endpoint C"]["filter"] = "^Trojan$"
         with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
             doc = yaml.safe_load(self.generate(config)[0]["body"])
-        self.assertIn("Endpoint C | Trojan | DIRECT", doc["proxy-groups"][0]["proxies"])
-        self.assertNotIn("EXIT | Endpoint C | DIRECT", [g["name"] for g in doc["proxy-groups"]])
+        self.assertEqual(doc["proxy-groups"][0]["proxies"], choices)
+        self.assertEqual({g["name"] for g in doc["proxy-groups"]}, {"PROXY", "POOL | pool-a", "POOL | pool-b"})
+        self.assertTrue(set(choices[:-2]).issubset({node["name"] for node in doc["proxies"]}))
         before = self.artifacts()
         providers["Endpoint C"]["filter"] = "^unmatched$"
         with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
@@ -467,9 +493,12 @@ class MihomoInputTests(unittest.TestCase):
 
     def test_automatic_relay_detects_generated_name_conflicts_and_cycles(self):
         for name, changes in (
-            ("Endpoint A | Trojan | DIRECT", {"port": 9443}),
-            ("EXIT | Endpoint A | RELAY", {}),
-            ("Sample-A 01", {"dialer-proxy": "EXIT | Endpoint A | RELAY"}),
+            ("DIRECT | Endpoint A", {"port": 9443}),
+            ("RELAY | Endpoint A | pool-a", {"port": 9443}),
+            ("RELAY | Endpoint B | pool-a", {}),
+            ("DIRECT | Endpoint B | Trojan", {"port": 9443}),
+            ("Sample-A 01", {"dialer-proxy": "RELAY | Endpoint A | pool-a"}),
+            ("Sample-A 01", {"dialer-proxy": "RELAY | Endpoint B | pool-a"}),
         ):
             config = self.automatic_relay_config()
             config["proxy-providers"]["pool-a"] = {
@@ -490,8 +519,8 @@ class MihomoInputTests(unittest.TestCase):
         example["secret"] = SECRET
         with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
             doc = yaml.safe_load(self.generate(example)[0]["body"])
-        self.assertIn("Endpoint A | VLESS | DIRECT", doc["proxy-groups"][0]["proxies"])
-        self.assertIn("EXIT | Endpoint B | DIRECT", doc["proxy-groups"][0]["proxies"])
+        self.assertIn("DIRECT | Endpoint A", doc["proxy-groups"][0]["proxies"])
+        self.assertIn("DIRECT | Endpoint B", doc["proxy-groups"][0]["proxies"])
 
     def test_mihomo_preview_chains_two_exits_through_subscription_selection(self):
         with patch.object(upstream, "urlopen", return_value=self.response()):

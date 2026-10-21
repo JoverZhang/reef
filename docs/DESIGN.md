@@ -343,7 +343,7 @@ This first version accepts:
   With no custom groups or `relay` mapping, the existing `PROXY` and `AUTO`
   defaults remain.
 - `relay`: an optional mapping from inline exit provider names to ordered lists
-  of intermediate provider names. It generates the exit, relay, and pool groups
+  of intermediate provider names. It generates the path options and pool groups
   described below. It cannot be combined with nonempty `proxy-groups`.
 
 For example, each collection explicitly lists its upstream subscriptions:
@@ -410,13 +410,13 @@ native Mihomo test under simulated resolver failure.
 
 ### Mihomo Client-side Relay
 
-The first relay milestone publishes Mihomo profiles with independently selectable
-intermediate and exit proxies. Nodes are ordinary protocol endpoints, regardless
-of which side of a chain uses them. A proxy's native `dialer-proxy` names another
+The first relay milestone publishes Mihomo profiles with selectable exit/pool
+paths. Nodes are ordinary protocol endpoints, regardless of which side of a chain
+uses them. A proxy's native `dialer-proxy` names another
 proxy or a selection group. It belongs on the **exit** endpoint:
 
 ```text
-client -> RELAY's selected node -> PROXY's selected exit -> destination
+client -> selected path's pool node -> selected path's exit -> destination
 ```
 
 This follows [Mihomo's native dialer-proxy semantics](https://wiki.metacubex.one/config/proxies/dialer-proxy/).
@@ -443,26 +443,30 @@ must not already set `dialer-proxy` in their payload or override. Pools can use
 inline or HTTP providers. Rename the provider key and its reference together;
 the generated names follow automatically.
 
-For each exit, Reef prefixes filtered endpoint names with `<provider name> | `,
-then makes separate ` | DIRECT` and ` | RELAY` copies. DIRECT copies have no
-`dialer-proxy`; RELAY copies point to `RELAY | <provider name>`. This keeps protocol
-selection and probe history independent for the two paths. The generated groups
+For each exit, Reef makes one copy of its filtered endpoints for each configured
+pool, plus one direct copy. DIRECT copies have no `dialer-proxy`; each RELAY copy
+points directly to `POOL | <pool name>`. Protocol selection and probe history are
+independent for every exit/pool path and the direct path. The generated choices
 are:
 
-- `PROXY`: each exit's RELAY option followed by its DIRECT option, in mapping
-  order, then the referenced pools in provider declaration order.
-- `EXIT | <provider name> | RELAY`: an automatic `url-test` group of relayed
-  endpoints, including when there is only one endpoint.
-- `EXIT | <provider name> | DIRECT`: an automatic `url-test` group only when the
-  filtered collection has multiple endpoints. With one endpoint, `PROXY`
-  references the DIRECT node itself, without an extra group. Empty collections
-  fail. This decision is recalculated on every generation.
-- `RELAY | <provider name>`: a `select` group of that exit's pools in the supplied
-  order. The first pool is the default; there is no DIRECT option.
+- `PROXY`: each exit's RELAY paths in the supplied pool order, followed by its
+  DIRECT path, in mapping order, then the referenced pools in provider declaration
+  order. The first path is the default. It is the only generated `select` group;
+  there is no separate intermediate selector or implicit direct fallback.
+- `RELAY | <provider name> | <pool name>`: connects to this exit through this pool.
+- `DIRECT | <provider name>`: connects to this exit without an intermediate.
 - `POOL | <provider name>`: one shared `url-test` group for each referenced pool.
   Selecting it in `PROXY` uses its node as the final exit, without an owned exit.
 
-These automatic groups use the existing probe defaults. Pool and endpoint names
+Both RELAY and DIRECT paths follow the same cardinality rule after filtering:
+one endpoint produces a proxy with the path's display name; multiple endpoints
+produce a `url-test` group with that name. Group members use
+`<path name> | <endpoint name>` and preserve each endpoint's protocol settings.
+The path's display name stays stable when its endpoint count changes. Empty
+collections fail. This decision is recalculated on every generation, without
+adding a group around a single endpoint.
+
+Automatic groups use the existing probe defaults. Pool and endpoint names
 may be localized in private configuration; public examples use English.
 DIRECT exit paths still use the exit server as their public exit. They are
 unrelated to Mihomo's built-in `DIRECT`, which bypasses proxying entirely.
@@ -477,18 +481,18 @@ relay can be a concrete node, a manual group, or a `url-test` group. Both node a
 group references are checked together for missing targets and cycles, including
 candidates that are not selected initially. There is no implicit direct fallback.
 
-Each generated relay selector keeps its own manual choice, so switching `PROXY`
-also switches to the corresponding intermediate without resetting it. Automatic
-groups remain visible so a client can pin a particular member. All references to
-the same pool share its current node, whether used as an exit or as an
+Selecting one path in `PROXY` determines both the exit and its intermediate pool.
+Automatic groups remain visible so a client can pin a particular member. All
+references to the same pool share its current node, whether used as an exit or as an
 intermediate. Combined pools keep their own selection across their explicitly
 listed subscriptions. Automatic pool tests measure the intermediate's own
 connection, not every possible intermediate/exit combination.
 
 The fictional endpoints demonstrate VLESS Reality, Trojan, and Hysteria2.
-Protocol selection is independent for direct and relayed paths. Hysteria2 exits
-require a relay capable of carrying their UDP transport. Exit probes include
-the currently selected intermediate; they do not search every possible pairing.
+Protocol selection is independent for direct paths and each exit/pool path.
+Hysteria2 exits require a relay capable of carrying their UDP transport. Exit
+probes include the pool's currently selected intermediate; they do not search
+every possible pairing.
 Actual protocol, destination-port, and UDP support still depend on both services;
 successful configuration validation is not an end-to-end connectivity test.
 Existing Reef-managed entry ports already forward through a fixed exit and are

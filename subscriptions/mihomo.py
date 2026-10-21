@@ -226,24 +226,22 @@ def relay_groups(
     choices = []
     groups = [{"name": "PROXY", "type": "select", "proxies": choices}]
     for name, pools in relay.items():
-        relay_name = f"RELAY | {name}"
-        for path in ("RELAY", "DIRECT"):
+        endpoints = providers[name]
+        paths = [(f"RELAY | {name} | {pool}", f"POOL | {pool}") for pool in pools]
+        paths.append((f"DIRECT | {name}", None))
+        for path, dialer in paths:
             members = []
-            for member in providers[name]:
+            for member in endpoints:
                 node = copy.deepcopy(by_name[member])
-                node["name"] = f"{member} | {path}"
-                if path == "RELAY":
-                    node["dialer-proxy"] = relay_name
+                endpoint_name = member.removeprefix(name + " | ")
+                node["name"] = path if len(endpoints) == 1 else f"{path} | {endpoint_name}"
+                if dialer:
+                    node["dialer-proxy"] = dialer
                 result.append(node)
                 members.append(node["name"])
-            if path == "DIRECT" and len(members) == 1:
-                choices.append(members[0])
-            else:
-                group_name = f"EXIT | {name} | {path}"
-                groups.append({"name": group_name, "type": "url-test", "proxies": members})
-                choices.append(group_name)
-        groups.append({"name": relay_name, "type": "select",
-                       "proxies": [f"POOL | {pool}" for pool in pools]})
+            choices.append(path)
+            if len(members) > 1:
+                groups.append({"name": path, "type": "url-test", "proxies": members})
     pool_names = {pool for pools in relay.values() for pool in pools}
     for name in providers:
         if name in pool_names:
