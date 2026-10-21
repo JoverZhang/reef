@@ -38,7 +38,7 @@ Their purpose:
   `build/subscriptions/mihomo/` and print their local paths for importing into a
   client. This local preview does not update the website or Quantumult X files.
 - `config-yaml`: print website configuration as YAML for `CONFIG_YAML`, excluding `ssh_private_key`, without modifying files or uploading secrets. Refuse to output in CI because the payload includes the root seed.
-- `web-deploy [gh-command]`: export website configuration, update `CONFIG_YAML` in `JoverZhang/reef`, update the `VERSION` timestamp, and commit and push it to `master`. The push triggers `deploy-website.yml`. The optional command defaults to `gh` and supplies the GitHub API and Git credentials and commit identity. Requires zsh and an authenticated GitHub CLI command. Run in an interactive login zsh so configured aliases and functions are available. Requires clean tracked files on `master` at the current remote commit. Stop on failure and pass configuration through stdin without printing it or putting it in command arguments. Returns after push; deployment runs asynchronously in GitHub Actions.
+- `web-deploy [gh-command]`: export website configuration, update `CONFIG_YAML` in `JoverZhang/reef`, update the `VERSION` timestamp, and commit and push it to `master`. The push triggers `deploy-website.yml`. The optional command defaults to `gh` and supplies the GitHub API and Git credentials. The system `git commit` uses the operator's existing Git identity. Requires zsh and an authenticated GitHub CLI command. Run in an interactive login zsh so configured aliases and functions are available. Requires clean tracked files on `master` at the current remote commit. Stop on failure and pass configuration through stdin without printing it or putting it in command arguments. Returns after push; deployment runs asynchronously in GitHub Actions.
 - `web-build`: install Web dependencies and run a production build.
 - `web-dev`: render Web artifacts, install Web dependencies, and start the local development server.
 
@@ -611,8 +611,9 @@ It validates and exports configuration, fetches and checks the remote commit,
 and uploads `CONFIG_YAML` before changing `VERSION`. Configuration stays in
 memory and goes to `gh secret set` through stdin; the command does not print it.
 `VERSION` records the UTC publication time as `YYYYMMDDHHMMSS`. Only that file
-is committed, with both author and committer set to the selected GitHub account
-using its GitHub noreply address. Git configuration is not changed persistently.
+is committed, using the system `git commit` with the operator's existing Git
+name and email. The recipe does not override the commit identity or change Git
+configuration.
 The recipe pushes the new commit directly to `JoverZhang/reef`'s `master` without
 force. The existing push trigger starts the website workflow; the recipe does
 not also dispatch a duplicate run. Check the resulting deployment in GitHub
