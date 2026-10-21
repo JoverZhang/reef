@@ -394,19 +394,37 @@ allows independent probe settings and latency groups containing other groups.
 Other provider/group options, including provider health checks and file
 providers, remain unsupported and fail explicitly.
 
-### Proxy DNS Bootstrapping
+### DNS Routing and Bootstrapping
 
-Both Mihomo profiles resolve proxy hostnames through
-`https://223.5.5.5/dns-query` and `https://doh.pub/dns-query`, independently of the
-selected proxy and the general destination resolvers. The existing IP-based
-`default-nameserver` resolves DNS server hostnames. It does not serve as a fallback
-for proxy hostname lookups when `proxy-server-nameserver` is configured.
+Both Mihomo profiles use `https://1.1.1.1/dns-query#PROXY` and
+`https://8.8.8.8/dns-query#PROXY` for application destination DNS. The explicit
+group binding sends Mihomo's DoH connections through the complete selected path:
+the intermediate, if any, then the selected exit, then the DNS service. Selecting
+a DIRECT exit path still sends DNS through that exit server. Failed proxy paths
+must fail DNS resolution rather than retry through a direct resolver. There is
+no direct `fallback` or application `nameserver-policy` override.
 
-Proxy startup must not require direct access to the general Cloudflare/Google
-DoH resolvers: when those are unreachable, domain-based upstream nodes would all
-fail while IP-based exit nodes still connect. Keep proxy hostname resolution
-separate from application destination DNS and verify this distinction with a
-native Mihomo test under simulated resolver failure.
+Startup resolution is separate to avoid circular dependencies. The encrypted,
+IP-addressed `default-nameserver`, `https://223.5.5.5/dns-query`, resolves DNS
+server hostnames. `proxy-server-nameserver` resolves proxy hostnames through
+`https://223.5.5.5/dns-query#DIRECT` and `https://doh.pub/dns-query#DIRECT`.
+These explicit direct queries are limited to bootstrapping and proxy addresses;
+neither resolver list is a fallback for application DNS. Proxy startup must not
+require direct access to Cloudflare/Google DoH, which may be unreachable locally.
+
+The rule-based profile also uses those two direct DoH services as
+`direct-nameserver`, only for resolution by an outbound already routed to the
+built-in `DIRECT` policy. It does not send domain queries directly based on a
+domestic `nameserver-policy` before deciding the traffic route. The global
+profile has no direct application resolver. Existing traffic rules and fake-IP
+behavior remain unchanged.
+
+This contract covers DNS issued by Mihomo. It does not configure DNS on remote
+proxy servers when a protocol sends them a destination hostname, or an
+application's independent DNS implementation. Verify the generated settings
+with native Mihomo tests for domain-based proxy startup, direct and two-hop exit
+paths, and failure without direct DNS fallback. These settings follow
+[Mihomo's DNS routing semantics](https://wiki.metacubex.one/en/config/dns/).
 
 ### Mihomo Client-side Relay
 

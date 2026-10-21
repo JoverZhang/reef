@@ -25,7 +25,8 @@ BINARY = core.ROOT / "bin/mihomo-linux-amd64"
 class ProxyHandlerForTest(BaseHTTPRequestHandler):
     def do_CONNECT(self):
         if self.server.unavailable:
-            self.send_error(502)
+            self.send_response(502)
+            self.end_headers()
             return
         host, port = self.path.rsplit(":", 1)
         self.server.calls.append((host, int(port)))
