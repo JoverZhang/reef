@@ -41,8 +41,8 @@ proxy-providers: {}
 #    type: http
 #    url: "https://subscription.example.com/private-clash-url"
 #    interval: 3600
-#    filter: "新加坡|美国"
-#    exclude-filter: "香港"
+#    filter: "Singapore|United States"
+#    exclude-filter: "Hong Kong"
 #    override:
 #      additional-prefix: "upstream-1 | "
 #  owned:

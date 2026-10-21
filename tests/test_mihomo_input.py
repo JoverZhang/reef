@@ -25,7 +25,7 @@ LOCAL = {
 }
 NODES = [
     {"name": name, "type": "http", "server": "proxy.example.test", "port": 443}
-    for name in ("新加坡 01", "美国 02", "香港 03")
+    for name in ("Singapore 01", "United States 02", "Hong Kong 03")
 ]
 CONFIG = {
     "secret": SECRET,
@@ -33,9 +33,9 @@ CONFIG = {
     "proxy-providers": {
         "overseas": {
             "type": "http", "url": URL, "interval": 3600,
-            "filter": "新加坡|美国|香港", "exclude-filter": "香港",
+            "filter": "Singapore|United States|Hong Kong", "exclude-filter": "Hong Kong",
         },
-        "singapore": {"type": "http", "url": URL, "filter": "新加坡"},
+        "singapore": {"type": "http", "url": URL, "filter": "Singapore"},
         "owned": {"type": "inline", "payload": [{**LOCAL, "name": "own-backup"}]},
     },
     "proxy-groups": [
@@ -82,25 +82,25 @@ class MihomoInputTests(unittest.TestCase):
             profiles = self.generate()
         self.assertEqual(fetch.call_count, 1)
         self.assertEqual([p["id"] for p in profiles], ["client", "linux-server", "quantumult-x"])
-        expected_names = ["own-trojan", "新加坡 01", "美国 02", "own-backup"]
+        expected_names = ["own-trojan", "Singapore 01", "United States 02", "own-backup"]
         for profile in profiles[:2]:
             document = yaml.safe_load(profile["body"])
             self.assertEqual([node["name"] for node in document["proxies"]], expected_names)
             groups = document["proxy-groups"]
-            self.assertEqual(groups[0]["proxies"], ["AUTO", "own-trojan", "own-backup", "新加坡 01"])
-            self.assertEqual(groups[1]["proxies"], ["新加坡 01", "美国 02", "own-backup"])
+            self.assertEqual(groups[0]["proxies"], ["AUTO", "own-trojan", "own-backup", "Singapore 01"])
+            self.assertEqual(groups[1]["proxies"], ["Singapore 01", "United States 02", "own-backup"])
             self.assertFalse(any("use" in group for group in groups))
             self.assertNotIn("proxy-providers", document)
         self.assertEqual(yaml.safe_load(profiles[1]["body"])["rules"], ["MATCH,PROXY"])
         self.assertIn("RULE-SET,bm_proxy,PROXY", yaml.safe_load(profiles[0]["body"])["rules"])
         qx = profiles[2]["body"]
-        self.assertIn("static=Reef, AUTO, own-trojan, own-backup, 新加坡 01", qx)
-        self.assertIn("url-latency-benchmark=AUTO, 新加坡 01, 美国 02, own-backup, check-interval=300, tolerance=50, alive-checking=true", qx)
+        self.assertIn("static=Reef, AUTO, own-trojan, own-backup, Singapore 01", qx)
+        self.assertIn("url-latency-benchmark=AUTO, Singapore 01, United States 02, own-backup, check-interval=300, tolerance=50, alive-checking=true", qx)
         self.assertIn("server_check_url=https://www.gstatic.com/generate_204", qx)
         self.assertIn("final, Reef", qx)
         self.assertIn("force-policy=Reef", qx)
         for profile in profiles:
-            for private in (URL, "private-password", "private-path", "private-query", "香港 03"):
+            for private in (URL, "private-password", "private-path", "private-query", "Hong Kong 03"):
                 self.assertNotIn(private, profile["body"])
             self.assertEqual(Path(profile["output"]).read_text(), profile["body"])
         generated = (self.root / "web/generated/subscriptions.ts").read_text()
@@ -235,7 +235,7 @@ class MihomoInputTests(unittest.TestCase):
         return {
             "secret": SECRET,
             "proxy-providers": {
-                "relays": {"type": "http", "url": URL, "filter": "新加坡|香港",
+                "relays": {"type": "http", "url": URL, "filter": "Singapore|Hong Kong",
                            "override": {"additional-prefix": "relay | "}},
                 "exits": {"type": "inline", "payload": [
                     {**LOCAL, "name": "sg1"},
@@ -268,10 +268,10 @@ class MihomoInputTests(unittest.TestCase):
             nodes = {node["name"]: node for node in doc["proxies"]}
             for name in ("MEGABOX", "sg1"):
                 self.assertEqual(nodes[name]["dialer-proxy"], "RELAY")
-            for name in ("relay | 新加坡 01", "relay | 香港 03"):
+            for name in ("relay | Singapore 01", "relay | Hong Kong 03"):
                 self.assertNotIn("dialer-proxy", nodes[name])
             self.assertEqual(doc["proxy-groups"][0]["proxies"], ["sg1", "MEGABOX"])
-            self.assertEqual(doc["proxy-groups"][1]["proxies"], ["RELAY-AUTO", "relay | 新加坡 01", "relay | 香港 03"])
+            self.assertEqual(doc["proxy-groups"][1]["proxies"], ["RELAY-AUTO", "relay | Singapore 01", "relay | Hong Kong 03"])
             self.assertNotIn(URL, profile["body"])
         after = self.artifacts()
         self.assertTrue(all(after[path] == body for path, body in before.items()))

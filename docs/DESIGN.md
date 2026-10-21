@@ -82,8 +82,8 @@ proxy-providers:
   upstream:
     type: http
     url: "https://subscription.example.com/private-clash-url"
-    filter: "新加坡|美国"
-    exclude-filter: "香港"
+    filter: "Singapore|United States"
+    exclude-filter: "Hong Kong"
 # Optional: omit these groups to keep the existing PROXY/AUTO defaults.
 proxy-groups:
   - name: PROXY
