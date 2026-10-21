@@ -16,6 +16,7 @@ just delete
 just test
 just urls
 just config-yaml
+just web-deploy
 just web-build
 just web-dev
 ```
@@ -33,6 +34,7 @@ Their purpose:
 - `test`: run the local integration test matrix.
 - `urls`: render subscription artifacts and print path-only subscription URLs.
 - `config-yaml`: print website configuration as YAML for `CONFIG_YAML`, excluding `ssh_private_key`, without modifying files or uploading secrets. Refuse to output in CI because the payload includes the root seed.
+- `web-deploy`: export website configuration, update the repository Secret `CONFIG_YAML` in `JoverZhang/reef`, then dispatch `deploy-website.yml` on `master`. Requires authenticated `gh`. Stop on export or upload failure, and pass the payload through stdin without printing it or putting it in command arguments. Returns after dispatch; deployment runs asynchronously in GitHub Actions.
 - `web-build`: install Web dependencies and run a production build.
 - `web-dev`: render Web artifacts, install Web dependencies, and start the local development server.
 
@@ -476,6 +478,13 @@ Run `just config-yaml` locally to validate and export this payload without
 fetching upstreams, changing local files, or uploading secrets. Copy its stdout
 into the GitHub Secret `CONFIG_YAML`. Export is refused in CI. The old
 `REEF_WEB_ENV` and `REEF_EXTEND_YAML` Secrets are no longer used.
+
+For routine publishing, run `just web-deploy`. It uses the same exporter, updates
+`CONFIG_YAML`, and starts the website workflow on `master` only after the upload
+succeeds. Configuration stays in memory and goes to `gh secret set` through
+stdin; the command does not print it. Check the resulting deployment in GitHub
+Actions. Changes to private `config.yaml` can be published this way without a
+code commit; application code is built from `master`.
 
 The workflow parses and validates the payload with the same configuration reader,
 registers masks for scalar values and decoded upstream URL credentials/tokens,
