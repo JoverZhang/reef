@@ -7,6 +7,7 @@ import os
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from http.client import BadStatusLine
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,7 +16,7 @@ from unittest.mock import patch
 import yaml
 
 from reef import core
-from reef.cli import config_yaml, render, smoke, urls
+from reef.cli import config_yaml, render, smoke
 from subscriptions import extension, upstream
 
 
@@ -90,7 +91,7 @@ class SubscriptionOnlyTests(unittest.TestCase):
         self.thread.start()
         self.addCleanup(self.stop_server)
         self.url = f"http://127.0.0.1:{self.server.server_port}/private-test-subscription"
-        self.values = {"secret": SECRET, "subscriptions": {"upstream_urls": [self.url]}}
+        self.values = {"secret": SECRET, "web": {"password": "test-web-key-" * 4}, "subscriptions": {"upstream_urls": [self.url]}}
 
     def stop_server(self) -> None:
         self.server.shutdown()
@@ -110,7 +111,9 @@ class SubscriptionOnlyTests(unittest.TestCase):
 
     def generate(self, model: core.Model | None = None) -> list[dict[str, str]]:
         with contextlib.redirect_stderr(io.StringIO()):
-            return core.render_web(model or self.model())
+            model = model or self.model()
+            model = replace(model, config=replace(model.config, web_password="test-web-key-" * 4))
+            return core.render_web(model)
 
     def artifacts(self) -> dict[str, bytes]:
         return {
@@ -163,11 +166,10 @@ class SubscriptionOnlyTests(unittest.TestCase):
         self.assertIn("tls-verification=true", qx)
         self.assertNotIn("TUIC example", qx)
         self.assertNotIn("ignored-upstream", qx)
-        generated = (self.root / "web/generated/subscriptions.ts").read_text()
-        web_profiles = json.loads(generated.split("GeneratedSubscription[] = ", 1)[1].rstrip(";\n"))
-        for profile, web_profile in zip(profiles, web_profiles, strict=True):
-            self.assertEqual(web_profile["body"], Path(profile["output"]).read_text())
-            self.assertEqual(web_profile["token"], profile["token"])
+        generated = (self.root / "web/generated/snapshot.ts").read_text()
+        web_profiles = json.loads(generated.split("snapshot: Snapshot = ", 1)[1].rstrip(";\n"))
+        self.assertEqual(web_profiles["proxies"], self.proxies)
+        self.assertEqual(web_profiles["qx"]["body"], profiles[2]["body"])
         self.assertFalse((self.root / "build/ansible").exists())
         self.assertFalse((self.root / "build/ssh").exists())
 
@@ -183,23 +185,23 @@ class SubscriptionOnlyTests(unittest.TestCase):
         self.assertEqual(self.requests, 1)
         self.assertIn("static=Reef, AUTO, sg-us, us-direct, Hong Kong 🇭🇰 TLS", profiles[2]["body"])
 
-    def test_updated_upstream_keeps_subscription_tokens_stable(self) -> None:
+    def test_updated_upstream_keeps_profile_ids_stable(self) -> None:
         first = self.generate()
         self.proxies[0]["password"] = "changed-test-password"
         self.payload = yaml.safe_dump({"proxies": self.proxies}).encode()
         second = self.generate()
         self.assertEqual(self.requests, 2)
-        self.assertEqual([p["token"] for p in first], [p["token"] for p in second])
+        self.assertEqual([p["id"] for p in first], [p["id"] for p in second])
         self.assertTrue(all(a["body"] != b["body"] for a, b in zip(first, second, strict=True)))
 
-    def test_removing_cluster_preserves_all_three_subscription_urls(self) -> None:
+    def test_removing_cluster_preserves_all_three_profiles(self) -> None:
         mixed = self.generate(self.model(cluster={"entries": [{"name": "sg", "ip": "192.0.2.1"}], "exits": [{"name": "us", "ip": "192.0.2.2"}]}))
         upstream_only = self.generate()
         self.assertEqual(
-            [(p["id"], p["token"]) for p in mixed],
-            [(p["id"], p["token"]) for p in upstream_only],
+            [p["id"] for p in mixed],
+            [p["id"] for p in upstream_only],
         )
-        generated = (self.root / "web/generated/subscriptions.ts").read_text()
+        generated = (self.root / "web/generated/snapshot.ts").read_text()
         self.assertTrue(generated.startswith("import 'server-only';"))
         for value in (SECRET, self.url, "ssh_private_key"):
             self.assertNotIn(value, generated)
@@ -240,19 +242,6 @@ class SubscriptionOnlyTests(unittest.TestCase):
             self.assertEqual(render.main(), 0)
         self.assertEqual(self.requests, 1)
 
-    def test_urls_fetches_once_and_hides_tokens_in_ci(self) -> None:
-        output = io.StringIO()
-        with (
-            patch.object(urls, "load_model", return_value=self.model()),
-            patch.dict(os.environ, {"CI": "1"}),
-            contextlib.redirect_stdout(output),
-            contextlib.redirect_stderr(io.StringIO()),
-        ):
-            self.assertEqual(urls.main(), 0)
-        self.assertEqual(self.requests, 1)
-        self.assertEqual(output.getvalue().count("<hidden in CI>"), 3)
-        self.assertNotIn("private-test-subscription", output.getvalue())
-
     def test_config_yaml_exports_subscription_only_config_without_fetching(self) -> None:
         core.write_config({**self.values, "ssh_private_key": "deployment-only-test-key"})
         before = (self.root / "config.yaml").read_bytes()
@@ -287,7 +276,7 @@ class SubscriptionOnlyTests(unittest.TestCase):
             "udp-relay=true",
         ):
             self.assertIn(option, profiles[2]["body"])
-        self.assertTrue((self.root / "web/generated/subscriptions.ts").exists())
+        self.assertTrue((self.root / "web/generated/snapshot.ts").exists())
         with self.assertRaisesRegex(ValueError, "deployment recipes require a Reef cluster"):
             core.parse_config(values, require_ssh=True)
 

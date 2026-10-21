@@ -1,8 +1,10 @@
 # All names, addresses, ports, and credentials below are fictional placeholders.
 # Copy the relevant sections into private config.yaml and fill in your values.
 # Preserve the existing secret and cluster section when migrating.
-# Run `just urls mihomo` for a local preview or `just web-deploy` to publish.
+# Run `just web-dev` for a local preview or `just web-deploy` to publish.
 secret: "replace_with_64_lowercase_hex_chars"
+web:
+  password: "replace-with-an-independent-random-access-key"
 
 proxy-providers:
   pool-a:
@@ -66,11 +68,13 @@ proxy-providers:
         skip-cert-verify: false
         udp: true
 
-# This replaces explicit proxy-groups. Paths follow the listed exit/pool order.
-# Path names follow provider names, without additional aliases or display names.
-relay:
-  Endpoint A: [pool-a, pool-b, pool-c]
-  Endpoint B: [pool-c, pool-a, pool-b]
+# Every exit is paired with every pool. Names follow provider display names.
+# Keep pool IDs stable: include1 always filters pool-a, regardless of map order.
+exits: [Endpoint A, Endpoint B]
+pools:
+  1: pool-a
+  2: pool-b
+  3: pool-c
 
 # PROXY offers RELAY | Endpoint A | pool-a, pool-b, pool-c, then DIRECT | Endpoint A.
 # Each Endpoint A path is a single proxy, without an extra group.
@@ -81,5 +85,6 @@ relay:
 # DIRECT paths connect to the exit server without an intermediate.
 # Relays must support the exit transport, including UDP for Hysteria2.
 # Avoid include-all in relay groups: including exits can create a cycle.
-# QX relay conversion is pending. Publishing updates both Mihomo subscriptions;
-# the QX URL returns HTTP 503 until a compatible configuration is published.
+# QX previews are available; relay exports return HTTP 422 until supported.
+# Preview: /?password=KEY&type=clash-geo&include1=Alpha,Beta
+# Export: /dump?password=KEY&type=clash-geo&include1=Alpha,Beta

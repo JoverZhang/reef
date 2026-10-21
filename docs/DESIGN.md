@@ -14,8 +14,6 @@ just apply
 just smoke
 just delete
 just test
-just urls
-just urls mihomo
 just config-yaml
 just web-deploy [gh-command]
 just web-build
@@ -33,10 +31,6 @@ Their purpose:
 - `smoke`: verify deployed routes through the generated client configuration.
 - `delete`: remove Reef-managed remote services and files. It asks for confirmation in an interactive shell and skips confirmation when `CI=1`.
 - `test`: run the local integration test matrix.
-- `urls`: render subscription artifacts and print path-only subscription URLs.
-- `urls mihomo`: render only the two Mihomo profiles into
-  `build/subscriptions/mihomo/` and print their local paths for importing into a
-  client. This local preview does not update the website or Quantumult X files.
 - `config-yaml`: print website configuration as YAML for `CONFIG_YAML`, excluding `ssh_private_key`, without modifying files or uploading secrets. Refuse to output in CI because the payload includes the root seed.
 - `web-deploy [gh-command]`: export website configuration, update `CONFIG_YAML` in `JoverZhang/reef`, update the `VERSION` timestamp, and commit and push it to `master`. The push triggers `deploy-website.yml`. The optional command defaults to `gh` and supplies the GitHub API and Git credentials. The system `git commit` uses the operator's existing Git identity. Requires zsh and an authenticated GitHub CLI command. Run in an interactive login zsh so configured aliases and functions are available. Requires clean tracked files on `master` at the current remote commit. Stop on failure and pass configuration through stdin without printing it or putting it in command arguments. Returns after push; deployment runs asynchronously in GitHub Actions.
 - `web-build`: install Web dependencies and run a production build.
@@ -108,8 +102,8 @@ Rules:
 - First phase supports all entries connected to all exits.
 - A Reef cluster requires at least one exit; entries are optional. With
   upstream subscriptions or extension nodes, both entries and exits may be omitted
-  for subscription-only use. `secret` is still required to derive private
-  subscription URL tokens.
+  for subscription-only use. `secret` remains the cluster seed; it is never
+  used as the website password.
 - Deployment recipes and `smoke` require a Reef cluster. Subscription-only use
   requires no SSH key, runtime binaries, or remote nodes.
 - `cluster` and legacy `subscriptions` are optional mappings. Their lists default to empty.
@@ -214,7 +208,6 @@ Derived material includes:
 - per-node transport password
 - per-node deterministic TLS private key and certificate
 - per-route local secrets required by the provider
-- per-profile subscription URL token
 
 TLS certificates must be deterministic:
 
@@ -273,45 +266,70 @@ The subscription Web is a Vercel-hosted Next.js app. It is not deployed by Ansib
 Build-time flow:
 
 ```text
-CONFIG_YAML Secret
-  -> config.yaml
-  -> Python render
-  -> web/generated/subscriptions.ts
-  -> Next.js build
+CONFIG_YAML -> config.yaml -> Python compilation -> server-only node/path snapshot
 ```
 
-Runtime flow:
+Request-time flow:
 
 ```text
-GET /<token>
-  -> match generated subscription
-  -> return body
+GET /?password=...&type=clash-geo&include1=Alpha,Beta
+  -> authenticate -> filter snapshot -> preview
+GET /dump?password=...&type=clash-geo&include1=Alpha,Beta
+  -> authenticate -> the same selection -> serialize configuration
 ```
 
-There is no query token and no separate subscription hash variable. Each profile has a deterministic opaque token:
+`web.password` is an independent random access key of at least 32 characters.
+It is required for website builds, must differ from `secret`, and is stored only
+as a SHA-256 digest in the server-only snapshot. Missing, repeated, or incorrect
+passwords return a real HTTP 404 before any preview data is returned. The previous
+opaque subscription paths are removed and return 404. There is no `dump=1` alias.
+`just urls` is removed; use the preview's copy-link or download action. Use
+`just web-dev` to preview locally and `just web-deploy` to refresh production.
 
-```text
-token = derive(secret, "subscription-url", profile_id)
-```
+One type selector chooses `clash` (global Mihomo), `clash-geo` (rule-based Mihomo,
+the default), or `qx` (rule-based Quantumult X). These map to the existing static
+profile templates. The templates remain the sole owners of DNS and rules.
 
-`subscription-url` is a derivation label, not a domain name. Reef does not store or render the public domain. `just urls` prints path-only URLs:
+Each `includeN` filters the pool with stable ID N. Missing or empty values select
+all nodes. Nonempty values are comma-separated literal substring alternatives,
+trimmed and matched case-insensitively against original node names, before source
+prefixes. They are not regular expressions or inferred locations. Configuration
+provider filters apply first; request filters cannot restore excluded nodes.
+Unknown or repeated parameters, unknown pool IDs, and invalid types return 400.
+A nonempty filter that selects no nodes produces a visible pool-specific preview
+error and a 422 dump response; it never silently removes a pool or changes paths.
 
-```text
-<profile-id>  /<token>
-```
+The preview shows the snapshot time, all exit endpoints and pool nodes, selected
+counts, and the resulting PROXY choices. Unmatched nodes remain visible and grey
+with a reason. Filter/type edits update the URL. Preview responses contain only
+node names, protocols, and selection/compatibility metadata, not connection
+credentials, addresses, or upstream URLs. The dump includes the selected nodes'
+connection details. Both routes use the same selection function and snapshot.
 
-Subscription profiles are declared by `subscriptions/profiles.yaml` and rendered by `subscriptions/render.py`:
+Every exit is paired with every pool. Path compilation and validation happen at
+build time; requests select pool memberships from the compiled graph and serialize
+only the selected nodes. Requests never fetch upstream subscriptions or change the
+snapshot. Shared nodes survive when selected by another pool, while each pool
+retains its own filtered membership. Static settings are identical to the existing
+profile templates. A displayed path is a configuration option, not proof of live
+connectivity; clients perform their own probes.
 
-```text
-subscriptions/
-├── profiles.yaml
-├── render.py
-└── <profile-template>.j2
-```
+QX previews remain available, including unsupported endpoint/path explanations.
+Until equivalent relay conversion exists, any configuration containing a relay
+returns HTTP 422 on QX export. Never strip a hop, silently use a direct path, or
+publish a partially unchained configuration.
 
-The subscription renderer receives the derived route model and the loaded provider ids. It is the single owner of subscription proxy naming and profile-specific output formatting.
+All preview, dump, and error responses use `Cache-Control: no-store`,
+`Referrer-Policy: no-referrer`, and no-index headers. Application and development
+request logging must not print full URLs. URL keys can still enter browser history
+or hosting-platform access logs. Filters are not access controls: anyone with the
+key can change them and obtain the complete allowed snapshot.
 
-`web/generated/subscriptions.ts` is generated and ignored by git because it contains full subscription contents.
+`web/generated/snapshot.ts` is ignored by git and marked `server-only`. It contains
+compiled node/path data and fixed settings, never the root seed, SSH key, upstream
+URLs, or plaintext website password. A failed fetch/validation must leave the
+previous artifact intact. Internal subscription rendering remains for smoke and
+integration checks; it does not publish token URLs.
 
 ### Native Mihomo Input
 
@@ -319,8 +337,7 @@ The preferred subscription input is the native Mihomo `proxies`,
 `proxy-providers`, and `proxy-groups` keys at the root of `config.yaml`, beside
 `secret` and the optional deployment `cluster`. No `sources`, multi-document
 YAML, custom routing language, or configurable output registry is introduced.
-The existing three profile IDs, filenames, URL tokens, DNS, and rule templates
-remain unchanged. `linux-server.yaml` routes all traffic through `PROXY` using
+The existing three profile IDs, filenames, DNS, and rule templates remain unchanged. `linux-server.yaml` routes all traffic through `PROXY` using
 `MATCH,PROXY`; `client.yaml` and `quantumult-x.conf` retain their rules.
 
 This first version accepts:
@@ -340,11 +357,14 @@ This first version accepts:
   names and `use` for provider names. The native `include-all`,
   `include-all-proxies`, and `include-all-providers` selectors are also accepted.
   Custom groups must contain `PROXY`, which is the existing templates' target.
-  With no custom groups or `relay` mapping, the existing `PROXY` and `AUTO`
+  With no custom groups or automatic exit/pool configuration, the existing `PROXY` and `AUTO`
   defaults remain.
-- `relay`: an optional mapping from inline exit provider names to ordered lists
-  of intermediate provider names. It generates the path options and pool groups
-  described below. It cannot be combined with nonempty `proxy-groups`.
+- `exits`: an optional nonempty ordered list of inline provider names.
+- `pools`: a nonempty mapping from stable positive numeric IDs to provider names,
+  configured together with `exits`. IDs may be quoted or unquoted in YAML; they
+  cannot have leading zeros or be reused. Provider names cannot repeat. Reordering
+  this mapping does not change which collection an `includeN` parameter filters.
+  Explicit `proxy-groups` cannot be combined with automatic exits/pools.
 
 For example, each collection explicitly lists its upstream subscriptions:
 
@@ -444,22 +464,23 @@ and credentials; they must not disclose private operator names or locations.
 
 Use `proxy-providers` for filtered subscription collections and inline endpoint
 collections. For automatic groups, each exit is one inline provider whose key is
-the node's display name, such as `Endpoint A`. Its payload contains the ordinary
-protocol endpoints, named for example `Trojan` and `Hysteria2`. The optional
-`relay` mapping specifies only which pools each exit can use:
+its display name, such as `Endpoint A`. The payload contains ordinary endpoints,
+for example `Trojan` and `Hysteria2`. Define collection roles once:
 
 ```yaml
-relay:
-  Endpoint A: [pool-a, pool-b, pool-c]
-  Endpoint B: [pool-c, pool-a, pool-b]
+web:
+  password: "replace-with-an-independent-random-access-key"
+exits: [Endpoint A, Endpoint B]
+pools:
+  1: pool-a
+  2: pool-b
 ```
 
-There is no separate group display name or region alias. All referenced providers
-must exist. The mapping and each pool list must be nonempty; repeated pools and
-using an exit provider as a pool are rejected. Exit providers must be inline and
-must not already set `dialer-proxy` in their payload or override. Pools can use
-inline or HTTP providers. Rename the provider key and its reference together;
-the generated names follow automatically.
+There is no per-exit `relay` mapping or separate display alias. Every exit uses
+every listed pool, in configuration order. All providers must exist. An exit
+cannot also be a pool and must not already set `dialer-proxy` in its payload or
+override. Pools can be inline or HTTP providers. Rename a provider key and its
+reference together; generated names follow automatically.
 
 For each exit, Reef makes one copy of its filtered endpoints for each configured
 pool, plus one direct copy. DIRECT copies have no `dialer-proxy`; each RELAY copy
@@ -468,8 +489,8 @@ independent for every exit/pool path and the direct path. The generated choices
 are:
 
 - `PROXY`: each exit's RELAY paths in the supplied pool order, followed by its
-  DIRECT path, in mapping order, then the referenced pools in provider declaration
-  order. The first path is the default. It is the only generated `select` group;
+  DIRECT path, in exit-list order, then the pools in configured
+  pool order. The first path is the default. It is the only generated `select` group;
   there is no separate intermediate selector or implicit direct fallback.
 - `RELAY | <provider name> | <pool name>`: connects to this exit through this pool.
 - `DIRECT | <provider name>`: connects to this exit without an intermediate.
@@ -489,7 +510,7 @@ may be localized in private configuration; public examples use English.
 DIRECT exit paths still use the exit server as their public exit. They are
 unrelated to Mihomo's built-in `DIRECT`, which bypasses proxying entirely.
 
-Without `relay`, explicit native `proxy-groups` including `PROXY` remain supported
+Without automatic exits/pools, explicit native `proxy-groups` including `PROXY` remain supported
 for manually defined chains. Only the native `dialer-proxy` field creates the
 connection; group names alone have no chaining behavior. Inline and HTTP providers
 can use `override.dialer-proxy` to share a defined relay group. The generator
@@ -517,18 +538,12 @@ Existing Reef-managed entry ports already forward through a fixed exit and are
 not used as ordinary intermediates in this example. A standalone exit definition
 must match the deployed endpoint; if its server credentials change, update it.
 
-Run `just urls mihomo` for a local preview, or `just web-deploy` to publish the
-two Mihomo subscriptions at their existing URLs. The fixed global and rule-based Mihomo
-templates keep their existing behavior. The rule-based profile can still route
-China destinations directly; only traffic assigned to `PROXY` uses the chain.
-When the resolved snapshot contains any `dialer-proxy`, normal generation renders
-only the two Mihomo profiles and reports that QX relay conversion is unavailable.
-After successful validation, it removes any stale local QX subscription file.
-The existing QX URL returns HTTP 503 with an explicit unsupported-relay message,
-so clients cannot mistake an unchained configuration for a successful update.
-It never strips the intermediate hop or silently drops chained exits.
-`just urls` prints only available subscription paths. Non-chain configurations
-retain all three outputs, including the same QX URL when relay settings are removed.
+Use `just web-dev` for local preview and `just web-deploy` to publish a fresh
+snapshot. The global and rule-based Mihomo templates keep their existing behavior.
+The rule-based profile can still route China destinations directly; only traffic
+assigned to `PROXY` uses the chain. QX previews show compatibility, but relay dumps
+return 422 until equivalent conversion is available. Non-chain configurations
+retain QX export using the existing conversion contract.
 
 The previous `subscriptions.upstream_urls` and `subscriptions.nodes` input
 continues to work for existing installations. It cannot be mixed with the new
@@ -603,7 +618,7 @@ not skip the failed source or replace previously generated subscription files.
 Errors identify the source as `upstream URL #N`, numbered from 1 in fetch order
 (the order of `subscriptions.upstream_urls`), and distinguish a failed
 request, invalid response format, and an empty node list. There is no background
-poller: `just urls`, website builds, and other subscription rendering steps fetch
+poller: website builds and internal subscription rendering steps fetch
 fresh nodes; hosted contents change after the next successful website deployment.
 Upstream URLs may contain credentials and stay in private `config.yaml` / `CONFIG_YAML`.
 
@@ -691,7 +706,7 @@ VERCEL_PROJECT_ID
 ```
 
 `CONFIG_YAML` is the single multiline YAML payload for the website: root seed,
-cluster settings, upstream URLs, and standalone nodes. It uses the same schema
+cluster settings, web password, upstream URLs, and standalone nodes. It uses the same schema
 as local `config.yaml`, excluding `ssh_private_key`. Test-only and unknown fields
 are rejected. At least one source of nodes is required.
 
@@ -737,6 +752,8 @@ For subscription-only use, the complete payload can be:
 
 ```yaml
 secret: "<64 lowercase hex chars>"
+web:
+  password: "replace-with-an-independent-random-access-key"
 proxy-providers:
   upstream-a:
     type: http

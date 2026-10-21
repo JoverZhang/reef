@@ -13,7 +13,7 @@ from urllib.error import URLError
 import yaml
 
 from reef import core
-from reef.cli import config_yaml, urls
+from reef.cli import config_yaml
 from subscriptions import upstream
 
 
@@ -64,7 +64,7 @@ class MihomoInputTests(unittest.TestCase):
         self.config = copy.deepcopy(CONFIG)
 
     def generate(self, document=None, *, mihomo_only=False):
-        model = core.build_model(core.parse_config(document or self.config))
+        model = core.build_model(core.parse_config({"web": {"password": "test-web-key-" * 4}, **(document or self.config)}))
         with redirect_stderr(io.StringIO()):
             if mihomo_only:
                 return core.render_subscriptions(model, mihomo_only=True)
@@ -103,17 +103,18 @@ class MihomoInputTests(unittest.TestCase):
             for private in (URL, "private-password", "private-path", "private-query", "Sample-C 03"):
                 self.assertNotIn(private, profile["body"])
             self.assertEqual(Path(profile["output"]).read_text(), profile["body"])
-        generated = (self.root / "web/generated/subscriptions.ts").read_text()
-        web = json.loads(generated.split("GeneratedSubscription[] = ", 1)[1].rstrip(";\n"))
-        self.assertEqual([item["body"] for item in web], [item["body"] for item in profiles])
-        self.assertTrue(all(item["status"] == 200 for item in web))
+        generated = (self.root / "web/generated/snapshot.ts").read_text()
+        web = json.loads(generated.split("snapshot: Snapshot = ", 1)[1].rstrip(";\n"))
+        self.assertEqual(web["proxies"], yaml.safe_load(profiles[0]["body"])["proxies"])
+        self.assertEqual(web["qx"]["body"], profiles[2]["body"])
+        self.assertIsNone(web["qx"]["error"])
 
-    def test_inline_and_top_level_nodes_work_without_network_and_tokens_stay_stable(self):
+    def test_inline_and_top_level_nodes_work_without_network(self):
         native = {"secret": SECRET, "proxy-providers": {"owned": {"type": "inline", "payload": [LOCAL]}}}
         with patch.object(upstream, "urlopen", side_effect=AssertionError("unexpected fetch")):
             profiles = self.generate(native)
             top_level = self.generate({"secret": SECRET, "proxies": [LOCAL]})
-        self.assertEqual([p["token"] for p in profiles], [p["token"] for p in top_level])
+        self.assertEqual([p["id"] for p in profiles], [p["id"] for p in top_level])
         self.assertEqual(yaml.safe_load(profiles[0]["body"])["proxies"], [LOCAL])
 
     def named_collections(self):
@@ -361,7 +362,7 @@ class MihomoInputTests(unittest.TestCase):
                      "port": 8443, "password": "test-password"},
                 ]},
             },
-            "relay": {"Endpoint A": ["pool-b", "pool-a"], "Endpoint B": ["pool-a", "pool-b"]},
+            "exits": ["Endpoint A", "Endpoint B"], "pools": {1: "pool-a", 2: "pool-b"},
         }
 
     def test_single_endpoint_paths_are_nodes_in_both_profiles(self):
@@ -371,7 +372,7 @@ class MihomoInputTests(unittest.TestCase):
                 "pool-a": {"type": "inline", "payload": [NODES[0]]},
                 "Endpoint A": {"type": "inline", "payload": [LOCAL]},
             },
-            "relay": {"Endpoint A": ["pool-a"]},
+            "exits": ["Endpoint A"], "pools": {1: "pool-a"},
         }
         for profile in self.generate(config, mihomo_only=True):
             doc = yaml.safe_load(profile["body"])
@@ -395,12 +396,13 @@ class MihomoInputTests(unittest.TestCase):
             groups = {g["name"]: g for g in doc["proxy-groups"]}
             nodes = {n["name"]: n for n in doc["proxies"]}
             self.assertEqual(groups["PROXY"]["proxies"], [
-                "RELAY | Endpoint A | pool-b", "RELAY | Endpoint A | pool-a", "DIRECT | Endpoint A",
+                "RELAY | Endpoint A | pool-a", "RELAY | Endpoint A | pool-b", "DIRECT | Endpoint A",
                 "RELAY | Endpoint B | pool-a", "RELAY | Endpoint B | pool-b", "DIRECT | Endpoint B",
                 "POOL | pool-a", "POOL | pool-b",
             ])
             self.assertEqual([g["name"] for g in groups.values() if g["type"] == "select"], ["PROXY"])
-            for endpoint, pools in config["relay"].items():
+            for endpoint in config["exits"]:
+                pools = list(config["pools"].values())
                 spec = config["proxy-providers"][endpoint]
                 for pool in [*pools, None]:
                     path = f"RELAY | {endpoint} | {pool}" if pool else f"DIRECT | {endpoint}"
@@ -425,15 +427,16 @@ class MihomoInputTests(unittest.TestCase):
             self.assertEqual(nodes[NODES[0]["name"]], NODES[0])
             self.assertEqual(len(nodes), 11)
             self.assertNotIn(URL, profile["body"])
-        generated = (self.root / "web/generated/subscriptions.ts").read_text()
-        web = json.loads(generated.split("GeneratedSubscription[] = ", 1)[1].rstrip(";\n"))
-        self.assertEqual([p["status"] for p in web], [200, 200, 503])
+        generated = (self.root / "web/generated/snapshot.ts").read_text()
+        web = json.loads(generated.split("snapshot: Snapshot = ", 1)[1].rstrip(";\n"))
+        self.assertIsNone(web["qx"]["body"])
+        self.assertIn("relay conversion", web["qx"]["error"])
 
     def test_automatic_groups_follow_renaming_and_filtered_endpoint_counts(self):
         config = self.automatic_relay_config()
         providers = config["proxy-providers"]
         providers["Endpoint C"] = providers.pop("Endpoint A")
-        config["relay"] = {"Endpoint C": config["relay"].pop("Endpoint A"), **config["relay"]}
+        config["exits"][0] = "Endpoint C"
         providers["Endpoint C"]["payload"].append({**NODES[0], "name": "HTTP"})
         providers["Endpoint B"]["exclude-type"] = "hysteria2"
         with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
@@ -444,7 +447,7 @@ class MihomoInputTests(unittest.TestCase):
             "DIRECT | Endpoint C | Trojan", "DIRECT | Endpoint C | HTTP",
         ])
         self.assertEqual(groups["PROXY"]["proxies"][:3], [
-            "RELAY | Endpoint C | pool-b", "RELAY | Endpoint C | pool-a", "DIRECT | Endpoint C",
+            "RELAY | Endpoint C | pool-a", "RELAY | Endpoint C | pool-b", "DIRECT | Endpoint C",
         ])
         for path in ("DIRECT | Endpoint B", "RELAY | Endpoint B | pool-a", "RELAY | Endpoint B | pool-b"):
             self.assertIn(path, groups["PROXY"]["proxies"])
@@ -465,16 +468,17 @@ class MihomoInputTests(unittest.TestCase):
         self.assertEqual(self.artifacts(), before)
 
     def test_automatic_relay_rejects_invalid_relations_without_echoing_names(self):
-        for relay in (
-            None, [], {}, {"private-exit": ["pool-a"]}, {"pool-a": ["pool-b"]},
-            {"Endpoint A": []}, {"Endpoint A": "private-pool"}, {"Endpoint A": [None]},
-            {"Endpoint A": ["private-pool"]}, {"Endpoint A": ["pool-a", "pool-a"]},
-            {"Endpoint A": ["Endpoint A"]},
-            {"Endpoint A": ["Endpoint B"], "Endpoint B": ["pool-a"]},
+        for changes in (
+            {"exits": None}, {"exits": []}, {"exits": ["private-exit"]},
+            {"exits": ["pool-a"]}, {"exits": ["Endpoint A", "Endpoint A"]},
+            {"pools": None}, {"pools": {}}, {"pools": {1: "private-pool"}},
+            {"pools": {1: "Endpoint A"}}, {"pools": {1: "pool-a", 2: "pool-a"}},
+            {"pools": {0: "pool-a"}}, {"pools": {"01": "pool-a"}},
+            {"pools": {1: "pool-a", "1": "pool-b"}}, {"pools": {True: "pool-a"}},
+            {"relay": {"private-exit": ["pool-a"]}},
         ):
-            config = self.automatic_relay_config()
-            config["relay"] = relay
-            with self.subTest(relay=relay), self.assertRaises(ValueError) as error:
+            config = {**self.automatic_relay_config(), **changes}
+            with self.subTest(changes=changes), self.assertRaises(ValueError) as error:
                 core.parse_config(config)
             self.assertNotIn("private-", str(error.exception))
         for setting in ("override", "payload", "proxy-groups"):
@@ -547,7 +551,7 @@ class MihomoInputTests(unittest.TestCase):
         after = self.artifacts()
         self.assertTrue(all(after[path] == body for path, body in before.items()))
 
-    def test_website_publishes_chains_and_explicitly_disables_qx_at_stable_urls(self):
+    def test_website_snapshot_preserves_chains_and_explicitly_disables_qx(self):
         with patch.object(upstream, "urlopen", return_value=self.response()):
             original = self.generate()
         with (
@@ -557,21 +561,18 @@ class MihomoInputTests(unittest.TestCase):
             profiles = self.generate(self.relay_config())
         self.assertEqual(fetch.call_count, 1)
         self.assertEqual([p["id"] for p in profiles], ["client", "linux-server"])
-        self.assertEqual([p["token"] for p in profiles], [p["token"] for p in original[:2]])
         for profile in profiles:
             self.assertEqual(Path(profile["output"]).parent, self.root / "build/subscriptions")
             nodes = yaml.safe_load(profile["body"])["proxies"]
             self.assertEqual({p["name"] for p in nodes if p.get("dialer-proxy") == "RELAY"}, {"endpoint-b", "endpoint-a"})
         self.assertFalse(Path(original[2]["output"]).exists())
-        generated = (self.root / "web/generated/subscriptions.ts").read_text()
-        web = json.loads(generated.split("GeneratedSubscription[] = ", 1)[1].rstrip(";\n"))
-        self.assertEqual([p["token"] for p in web], [p["token"] for p in original])
-        self.assertEqual([p["status"] for p in web], [200, 200, 503])
-        self.assertEqual([p["body"] for p in web[:2]], [p["body"] for p in profiles])
-        self.assertIn("relay conversion is not supported", web[2]["body"])
-        self.assertNotIn("[server_local]", web[2]["body"])
+        generated = (self.root / "web/generated/snapshot.ts").read_text()
+        web = json.loads(generated.split("snapshot: Snapshot = ", 1)[1].rstrip(";\n"))
+        self.assertIsNone(web["qx"]["body"])
+        self.assertIn("relay conversion", web["qx"]["error"])
+        self.assertEqual(web["proxies"], yaml.safe_load(profiles[0]["body"])["proxies"])
         self.assertNotIn(URL, generated)
-        # Removing chains restores the QX subscription without changing its URL.
+        # Removing chains restores QX export.
         with patch.object(upstream, "urlopen", return_value=self.response()):
             restored = self.generate()
         self.assertEqual(restored, original)
@@ -629,16 +630,3 @@ class MihomoInputTests(unittest.TestCase):
         }
         profiles = self.generate(config, mihomo_only=True)
         self.assertEqual(yaml.safe_load(profiles[0]["body"])["proxy-groups"][0]["timeout"], 8000)
-
-    def test_urls_mihomo_prints_paths_without_updating_website(self):
-        model = core.build_model(core.parse_config(self.relay_config()))
-        output = io.StringIO()
-        with (
-            patch.object(urls, "load_model", return_value=model),
-            patch.object(upstream, "urlopen", return_value=self.response()),
-            redirect_stdout(output), redirect_stderr(io.StringIO()),
-        ):
-            self.assertEqual(urls.main("mihomo"), 0)
-        self.assertIn("build/subscriptions/mihomo/client.yaml", output.getvalue())
-        self.assertNotIn(URL, output.getvalue())
-        self.assertFalse((self.root / "web").exists())

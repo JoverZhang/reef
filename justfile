@@ -37,9 +37,6 @@ delete: setup
     {{python}} -m reef.cli.confirm_delete
     {{ansible_playbook}} -i build/ansible/inventory.yml ansible/delete.yml --diff
 
-urls target="all": setup
-    {{python}} -m reef.cli.urls "{{target}}"
-
 config-yaml: setup
     {{python}} -m reef.cli.config_yaml
 

@@ -153,7 +153,7 @@ class CISecretTests(unittest.TestCase):
             "secret": SECRET,
             "cluster": {"exits": [{"name": "us", "ip": "private-invalid-ip"}]},
         }, config_file)
-        for module in ("render", "urls"):
+        for module in ("render",):
             command = [sys.executable, "-m", f"reef.cli.{module}"]
             if module == "render":
                 command.append("web")

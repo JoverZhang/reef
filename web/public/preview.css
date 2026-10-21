@@ -1,0 +1,60 @@
+:root { color-scheme: light; --ink: #172b32; --muted: #60727a; --accent: #076e65; --line: #dbe4e3; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f5f8f7; color: var(--ink); font: 15px/1.6 system-ui, sans-serif; }
+main { max-width: 1140px; margin: auto; padding: 0 32px; }
+header { display: flex; align-items: center; justify-content: space-between; padding: 24px 0; border-bottom: 1px solid var(--line); }
+.brand { color: var(--ink); font-size: 30px; font-weight: 800; letter-spacing: -1.5px; text-decoration: none; }
+.brand-dot { color: var(--accent); }
+.private-label, .eyebrow { font-size: 11px; letter-spacing: .12em; font-weight: 700; color: var(--accent); }
+.intro { padding: 35px 0 10px; }
+h1 { font-size: clamp(30px, 5vw, 42px); line-height: 1.15; letter-spacing: -.04em; margin: 10px 0 14px; }
+h2 { font-size: 21px; letter-spacing: -.02em; margin: 0; }
+h3 { font-size: 16px; margin: 0; overflow-wrap: anywhere; }
+p { margin: 8px 0; }
+.intro > p:not(.eyebrow), .hint, .snapshot { color: var(--muted); }
+.snapshot, .hint { font-size: 12px; }
+.snapshot { margin-top: 20px; font-variant-numeric: tabular-nums; }
+.toolbar { display: flex; align-items: center; gap: 14px; padding: 20px 0; border-bottom: 1px solid var(--line); }
+.toolbar label { font-weight: 600; }
+select, input, button, .download { font: inherit; border-radius: 7px; }
+select, input { color: var(--ink); border: 1px solid #c5d4d1; background: white; padding: 10px 12px; }
+input { width: 100%; }
+button { background: var(--accent); color: white; border: 1px solid var(--accent); padding: 10px 17px; cursor: pointer; font-weight: 600; }
+button:hover { background: #08564f; }
+button:disabled { background: #d5dedb; border-color: #d5dedb; color: #687b75; cursor: not-allowed; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #49bdb0; outline-offset: 3px; }
+section:not(.intro) { margin: 30px 0; }
+.section-title, .pool-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 14px; }
+.section-title > span { color: var(--muted); font-size: 12px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px; }
+.card { background: white; padding: 20px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.nodes { list-style: none; padding: 0; margin: 15px 0 0; }
+.node { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-top: 1px solid #edf1f0; }
+.node-name { font-size: 13px; overflow-wrap: anywhere; }
+.node small { display: block; color: var(--muted); font-size: 11px; }
+.protocol { border-radius: 5px; color: var(--accent); background: #edf7f4; padding: 2px 7px; font-size: 10px; text-transform: uppercase; white-space: nowrap; }
+.muted { opacity: .45; }
+.muted .protocol { background: #f0f2f2; color: #586767; }
+.filter-label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+.count { color: var(--accent); background: #edf7f4; border-radius: 5px; padding: 2px 8px; font-size: 12px; white-space: nowrap; }
+.pool-nodes { max-height: 370px; overflow-y: auto; padding-right: 8px; }
+.result { background: #eaf1ee; border-radius: 12px; padding: 24px; }
+.choices { list-style: none; padding: 0; display: flex; gap: 8px; flex-wrap: wrap; }
+.choices li { background: #fff; border: 1px solid #d6e1dc; border-radius: 6px; padding: 5px 10px; font-size: 12px; overflow-wrap: anywhere; }
+.errors { background: #fff4e8; color: #854614; border: 1px solid #ecd5b7; border-radius: 8px; padding: 14px 18px; margin: 20px 0; }
+.errors ul { padding-left: 20px; margin: 5px 0; }
+.actions { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin: 22px 0 12px; }
+.download { color: var(--accent); font-weight: 600; }
+.disabled, #copy-status { color: var(--muted); font-size: 12px; }
+footer { padding: 8px 0 28px; color: var(--muted); font-size: 12px; }
+@media (max-width: 640px) {
+  main { padding: 0 18px; }
+  .intro { padding-top: 24px; }
+  .toolbar { flex-wrap: wrap; gap: 10px; }
+  .toolbar select { flex: 1; min-width: 0; }
+  .toolbar button { width: 100%; }
+  .section-title { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .cards { grid-template-columns: minmax(0, 1fr); }
+  .result { padding: 18px; }
+  .actions { gap: 12px; }
+}

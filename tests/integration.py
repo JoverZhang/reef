@@ -75,6 +75,7 @@ def write_config(
         exits.append({"name": "uk", "ip": "172.28.0.21"})
     document = {
         "secret": "11" * 32,
+        "web": {"password": "test-web-key-" * 4},
         "ssh_private_key": private_key,
         "cluster": {
             "entry_port_base": 20000,
@@ -171,7 +172,6 @@ def main() -> int:
         noop_apply = run_output(["just", "apply"], env=full_recipe_env)
         if re.search(r"changed=[1-9]", noop_apply):
             raise RuntimeError("second apply should not change any node")
-        run(["just", "urls"], env=full_recipe_env)
         run(
             [
                 str(ROOT / ".venv" / "bin" / "python"),

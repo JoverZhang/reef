@@ -26,9 +26,9 @@ DRY is not the goal by itself. Avoid duplicated meaning, not harmless repeated s
   addresses. Never copy private operator node names, subscription names, locations,
   abbreviations, transliterations, domains, IPs, or credentials into public files.
 - `justfile` is the user interface. Do not add another CLI layer.
-- Python is the generator and glue layer only.
+- Python compiles snapshots and deployment artifacts; TypeScript selects and serializes subscriptions at request time.
 - Ansible is the deployment engine only.
-- Next.js serves generated subscriptions only; it does not deploy nodes.
+- Next.js serves authenticated subscription previews and dumps from build-time snapshots; it does not deploy nodes or fetch upstreams.
 - Do not add configuration unless `docs/DESIGN.md` requires it.
 - Do not add provider plugin mechanics beyond the provider manifest and directory convention.
 - Do not hardcode subscription bodies in Next.js route files.

@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from subscriptions.upstream import fetch_nodes, validate_nodes
 
 
-INPUT_KEYS = {"proxies", "proxy-providers", "proxy-groups", "relay"}
+INPUT_KEYS = {"proxies", "proxy-providers", "proxy-groups", "exits", "pools"}
 PROBE_URL = "https://www.gstatic.com/generate_204"
 
 
@@ -131,14 +131,17 @@ def validate_input(values: dict[str, Any]) -> None:
             _url(group["url"], f"{label} url")
     if groups and "PROXY" not in names:
         raise ValueError("proxy-groups must define PROXY for the three profile templates")
-    if "relay" in values:
-        relay = values["relay"]
-        if not isinstance(relay, dict) or not relay:
-            raise ValueError("relay must be a nonempty mapping")
+    if "exits" in values or "pools" in values:
+        exits, pools = values.get("exits"), values.get("pools")
+        if not isinstance(exits, list) or not exits:
+            raise ValueError("exits must be a nonempty list of inline provider names")
+        if not isinstance(pools, dict) or not pools:
+            raise ValueError("pools must be a nonempty mapping of stable numeric IDs to provider names")
         if groups:
-            raise ValueError("relay cannot be combined with explicit proxy-groups")
-        for index, (name, pools) in enumerate(relay.items(), start=1):
+            raise ValueError("exits/pools cannot be combined with explicit proxy-groups")
+        for index, name in enumerate(exits, start=1):
             label = f"relay exit #{index}"
+            _name(name, label)
             if name not in providers or providers[name]["type"] != "inline":
                 raise ValueError(f"{label} must reference an inline proxy-provider")
             spec = providers[name]
@@ -146,16 +149,18 @@ def validate_input(values: dict[str, Any]) -> None:
                 "dialer-proxy" in node for node in spec["payload"]
             ):
                 raise ValueError(f"{label} must not already define dialer-proxy")
-            if not isinstance(pools, list) or not pools:
-                raise ValueError(f"{label} pools must be a nonempty list")
-            for pool in pools:
-                _name(pool, f"{label} pool")
-                if pool not in providers:
-                    raise ValueError(f"{label} references an unknown pool provider")
-                if pool in relay:
-                    raise ValueError(f"{label} cannot use an exit provider as a pool")
-            if len(set(pools)) != len(pools):
-                raise ValueError(f"{label} contains duplicate pools")
+        if len(set(exits)) != len(exits):
+            raise ValueError("exits contains duplicate provider names")
+        ids = set()
+        for key, pool in pools.items():
+            if type(key) not in (int, str) or not re.fullmatch(r"[1-9][0-9]*", str(key)) or str(key) in ids:
+                raise ValueError("pools requires unique positive numeric IDs without leading zeros")
+            ids.add(str(key))
+            _name(pool, "pool provider")
+            if pool not in providers or pool in exits:
+                raise ValueError("pool must reference an existing non-exit provider")
+        if len(set(pools.values())) != len(pools):
+            raise ValueError("pools contains duplicate provider names")
 
 
 def provider_upstreams(spec: dict) -> list[dict]:
@@ -165,7 +170,8 @@ def provider_upstreams(spec: dict) -> list[dict]:
 
 
 def load_providers(
-    specs: dict[str, dict], relay: dict[str, list[str]] | None = None,
+    specs: dict[str, dict], exits: list[str] | None = None,
+    *, original_names: dict[str, dict[str, str]] | None = None,
 ) -> tuple[list[dict], dict[str, list[str]]]:
     nodes: dict[str, dict] = {}
     members = {}
@@ -176,6 +182,7 @@ def load_providers(
         exclude = _patterns(spec.get("exclude-filter", ""), f"{label} exclude-filter")
         excluded_types = spec.get("exclude-type", "").split("|")
         selected = {}
+        originals = {}
         override = spec.get("override", {})
         sources = provider_upstreams(spec) if spec["type"] == "http" else [{}]
         for source in sources:
@@ -199,13 +206,14 @@ def load_providers(
                     override.get("additional-prefix", "") + prefix + node["name"]
                     + override.get("additional-suffix", "")
                 )
-                if relay and name in relay:
+                if exits and name in exits:
                     node["name"] = f"{name} | {node['name']}"
                 if "dialer-proxy" in override:
                     node["dialer-proxy"] = override["dialer-proxy"]
                 if node["name"] in selected and node != selected[node["name"]]:
                     raise ValueError(f"{label} has a conflicting node name")
                 selected.setdefault(node["name"], node)
+                originals[node["name"]] = candidate["name"]
         if not selected:
             raise ValueError(f"{label} has no nodes after filtering")
         validate_nodes(list(selected.values()), label, set(), allow_dialer=True)
@@ -214,18 +222,20 @@ def load_providers(
                 raise ValueError(f"{label} has a conflicting node name")
             nodes.setdefault(node["name"], node)
         members[name] = list(selected)
+        if original_names is not None:
+            original_names[name] = originals
     return list(nodes.values()), members
 
 
 def relay_groups(
-    nodes: list[dict], providers: dict[str, list[str]], relay: dict[str, list[str]],
+    nodes: list[dict], providers: dict[str, list[str]], exits: list[str], pools: list[str],
 ) -> tuple[list[dict], list[dict]]:
     by_name = {node["name"]: node for node in nodes}
-    exit_names = {name for provider in relay for name in providers[provider]}
+    exit_names = {name for provider in exits for name in providers[provider]}
     result = [node for node in nodes if node["name"] not in exit_names]
     choices = []
     groups = [{"name": "PROXY", "type": "select", "proxies": choices}]
-    for name, pools in relay.items():
+    for name in exits:
         endpoints = providers[name]
         paths = [(f"RELAY | {name} | {pool}", f"POOL | {pool}") for pool in pools]
         paths.append((f"DIRECT | {name}", None))
@@ -242,12 +252,10 @@ def relay_groups(
             choices.append(path)
             if len(members) > 1:
                 groups.append({"name": path, "type": "url-test", "proxies": members})
-    pool_names = {pool for pools in relay.values() for pool in pools}
-    for name in providers:
-        if name in pool_names:
-            group_name = f"POOL | {name}"
-            choices.append(group_name)
-            groups.append({"name": group_name, "type": "url-test", "use": [name]})
+    for name in pools:
+        group_name = f"POOL | {name}"
+        choices.append(group_name)
+        groups.append({"name": group_name, "type": "url-test", "use": [name]})
     return result, groups
 
 

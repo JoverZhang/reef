@@ -17,13 +17,14 @@ from urllib.error import URLError
 import yaml
 
 from reef import core
-from reef.cli import config_yaml, render as render_cli, urls
+from reef.cli import config_yaml, render as render_cli
 from subscriptions import render, upstream
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "upstream.yaml"
 CONFIG = {
     "secret": "11" * 32,
+    "web": {"password": "test-web-key-" * 4},
     "cluster": {
         "entries": [{"name": "sg", "ip": "192.0.2.10"}, {"name": "jp", "ip": "192.0.2.11"}],
         "exits": [{"name": "us", "ip": "192.0.2.20"}, {"name": "uk", "ip": "192.0.2.21"}],
@@ -265,36 +266,19 @@ class SubscriptionTests(unittest.TestCase):
                     self.assertEqual(render_cli.main(), 0)
                 self.assertEqual(state["requests"], 1)
                 self.assertEqual(second_state["requests"], 1)
-                web_file = project_path("web", "generated", "subscriptions.ts")
+                web_file = project_path("web", "generated", "snapshot.ts")
                 items = json.loads(
-                    web_file.read_text().split("GeneratedSubscription[] = ", 1)[1].rstrip(";\n")
+                    web_file.read_text().split("snapshot: Snapshot = ", 1)[1].rstrip(";\n")
                 )
-                for item in items:
-                    output = (
-                        "quantumult-x.conf"
-                        if item["id"] == "quantumult-x"
-                        else item["id"] + ".yaml"
-                    )
-                    self.assertEqual(
-                        item["body"], project_path("build", "subscriptions", output).read_text()
-                    )
-                    if item["id"] == "quantumult-x":
-                        self.assertNotIn("TUIC", item["body"])
-                        for proxy in self.proxies[:-1]:
-                            self.assertIn(f"tag={proxy['name']}", item["body"])
-                    else:
-                        self.assertEqual(
-                            yaml.safe_load(item["body"])["proxies"][-len(self.proxies) :],
-                            self.proxies,
-                        )
+                self.assertEqual(items["proxies"][-len(self.proxies):], self.proxies)
+                self.assertEqual(items["qx"]["body"], project_path("build", "subscriptions", "quantumult-x.conf").read_text())
+                self.assertNotIn("TUIC", items["qx"]["body"])
+                for proxy in self.proxies[:-1]:
+                    self.assertIn(f"tag={proxy['name']}", items["qx"]["body"])
                 second_state["body"] = yaml.safe_dump(
                     {"proxies": [{**self.proxies[4], "password": "changed-password"}]}
                 ).encode()
-                with (
-                    patch.object(urls, "load_model", return_value=model),
-                    redirect_stdout(io.StringIO()),
-                ):
-                    self.assertEqual(urls.main(), 0)
+                core.render_web(model)
                 self.assertEqual(state["requests"], 2)
                 self.assertEqual(second_state["requests"], 2)
                 client = yaml.safe_load(

@@ -8,7 +8,6 @@ import ipaddress
 import json
 import os
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,7 +34,7 @@ from subscriptions.upstream import (
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE_DIR = "/opt/reef"
 SECRET_RE = re.compile(r"^[0-9a-f]{64}$")
-CONFIG_FIELDS = {"secret", "ssh_private_key", "cluster", "subscriptions"} | INPUT_KEYS
+CONFIG_FIELDS = {"secret", "ssh_private_key", "cluster", "subscriptions", "web"} | INPUT_KEYS
 # NIST P-256 group order. cryptography exposes SECP256R1(), but not the scalar
 # field order needed to derive a deterministic private key from the root seed.
 P256_ORDER = int("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
@@ -81,7 +80,9 @@ class Config:
     extend_proxies: list[dict[str, Any]]
     proxy_providers: dict[str, dict[str, Any]]
     proxy_groups: list[dict[str, Any]]
-    relay: dict[str, list[str]]
+    exit_providers: list[str]
+    pools: dict[str, str]
+    web_password: str | None
 
 
 @dataclass(frozen=True)
@@ -129,8 +130,10 @@ class _ConfigLoader(yaml.SafeLoader):
         result = {}
         for key_node, value_node in node.value:
             key = self.construct_object(key_node, deep=deep)
-            if not isinstance(key, str) or key in result:
-                raise ValueError("config.yaml keys must be unique strings")
+            if type(key) not in (str, int) or key in result:
+                raise ValueError("config.yaml keys must be unique strings or numeric pool IDs")
+            if type(key) is int and not re.fullmatch(r"[1-9][0-9]*", key_node.value):
+                raise ValueError("numeric pool IDs must be positive decimals without leading zeros")
             result[key] = self.construct_object(value_node, deep=deep)
         return result
 
@@ -189,6 +192,15 @@ def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config
     secret = values.get("secret")
     if not isinstance(secret, str) or not SECRET_RE.fullmatch(secret):
         raise ValueError("secret must be a string of exactly 64 lowercase hex characters")
+    web_password = None
+    if "web" in values:
+        web = _config_mapping(values["web"], {"password"}, "web")
+        web_password = web.get("password")
+        if (not isinstance(web_password, str) or len(web_password) < 32
+                or any(c.isspace() or ord(c) < 32 for c in web_password)):
+            raise ValueError("web.password must be an independent access key of at least 32 characters without whitespace")
+        if web_password == secret:
+            raise ValueError("web.password must not reuse the root secret")
     cluster = _config_mapping(values.get("cluster", {}), {
         "entries", "exits", "entry_port_base", "exit_port",
     }, "cluster")
@@ -231,7 +243,9 @@ def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config
         extend_proxies=extend_proxies,
         proxy_providers=proxy_providers,
         proxy_groups=values.get("proxy-groups", []),
-        relay=values.get("relay", {}),
+        exit_providers=values.get("exits", []),
+        pools={str(key): name for key, name in values.get("pools", {}).items()},
+        web_password=web_password,
     )
 
 
@@ -839,12 +853,13 @@ def service_names_for_node(model: Model, node: Node) -> list[str]:
 def render_subscriptions(
     model: Model, host_map_path: Path | None = None, *, mihomo_only: bool = False,
 ) -> list[dict[str, str]]:
-    build_dir = project_path("build", "subscriptions")
-    _ensure_private_dir(project_path("build"))
-    _ensure_private_dir(build_dir)
-    if mihomo_only:
-        build_dir = build_dir / "mihomo"
-        _ensure_private_dir(build_dir)
+    rendered, _ = _compile_subscriptions(model, host_map_path, mihomo_only=mihomo_only)
+    return _write_subscriptions(rendered, mihomo_only=mihomo_only)
+
+
+def _compile_subscriptions(
+    model: Model, host_map_path: Path | None = None, *, mihomo_only: bool = False,
+) -> tuple[list[dict], dict]:
     host_map = _load_json_file(host_map_path or _env_path("TEST_HOST_MAP"))
     renderer = load_subscription_renderer()
     context = subscription_context(model, host_map)
@@ -852,12 +867,16 @@ def render_subscriptions(
         model.config.upstream_urls, model.config.extend_proxies
     )
     context["top_proxy_names"] = [node["name"] for node in context["upstream_proxies"]]
+    context["original_names"] = {}
     provider_nodes, context["provider_members"] = load_proxy_providers(
-        model.config.proxy_providers, model.config.relay,
+        model.config.proxy_providers, model.config.exit_providers,
+        original_names=context["original_names"],
     )
-    if model.config.relay:
+    context["provider_nodes"] = provider_nodes
+    if model.config.exit_providers:
         provider_nodes, context["proxy_groups"] = relay_groups(
-            provider_nodes, context["provider_members"], model.config.relay,
+            provider_nodes, context["provider_members"], model.config.exit_providers,
+            list(model.config.pools.values()),
         )
     nodes_by_name = {node["name"]: node for node in context["upstream_proxies"]}
     for node in provider_nodes:
@@ -866,15 +885,22 @@ def render_subscriptions(
         nodes_by_name.setdefault(node["name"], node)
     context["upstream_proxies"] = list(nodes_by_name.values())
     has_chain = any("dialer-proxy" in node for node in context["upstream_proxies"])
-    omitted = []
     if mihomo_only or has_chain:
-        omitted = [p for p in context["profiles"] if p["id"] == "quantumult-x"]
-        context["profiles"] = [p for p in context["profiles"] if p not in omitted]
+        context["profiles"] = [p for p in context["profiles"] if p["id"] != "quantumult-x"]
     else:
         context["qx_upstream"] = quantumult_x_nodes(context["upstream_proxies"])
     rendered = renderer.render(context)
     if hasattr(renderer, "validate"):
         renderer.validate(rendered, context)
+    return rendered, context
+
+
+def _write_subscriptions(rendered: list[dict], *, mihomo_only: bool = False) -> list[dict]:
+    build_dir = project_path("build", "subscriptions")
+    _ensure_private_dir(project_path("build"))
+    if mihomo_only:
+        build_dir = build_dir / "mihomo"
+    _ensure_private_dir(build_dir)
 
     profiles = []
     for profile in rendered:
@@ -884,21 +910,14 @@ def render_subscriptions(
         profiles.append(
             {
                 "id": profile["id"],
-                "token": _subscription_token(model, profile["id"]),
                 "output": str(output),
                 "content_type": profile.get("content_type", "text/plain; charset=utf-8"),
                 "body": body,
             }
         )
-    for profile in omitted:
-        (build_dir / profile["output"]).unlink(missing_ok=True)
-    if has_chain and not mihomo_only:
-        print("Quantumult X relay conversion is unavailable; generated Mihomo subscriptions only.", file=sys.stderr)
+    if not any(p["id"] == "quantumult-x" for p in rendered):
+        (build_dir / "quantumult-x.conf").unlink(missing_ok=True)
     return profiles
-
-
-def _subscription_token(model: Model, profile_id: str) -> str:
-    return derive_text(bytes.fromhex(model.config.secret_hex), "subscription-url", profile_id, length=24)
 
 
 def subscription_proxy_metadata(
@@ -969,40 +988,21 @@ def load_subscription_renderer():
 
 
 def render_web(model: Model) -> list[dict[str, str]]:
-    profiles = render_subscriptions(model)
-    out = project_path("web", "generated", "subscriptions.ts")
-    _ensure_private_dir(out.parent)
-    items = [
-        {
-            "id": p["id"],
-            "token": p["token"],
-            "contentType": p["content_type"],
-            "body": p["body"],
-            "status": 200,
-        }
-        for p in profiles
-    ]
-    if not any(p["id"] == "quantumult-x" for p in profiles):
-        items.append({
-            "id": "quantumult-x",
-            "token": _subscription_token(model, "quantumult-x"),
-            "contentType": "text/plain; charset=utf-8",
-            "body": "Quantumult X relay conversion is not supported yet. Use a Mihomo subscription.\n",
-            "status": 503,
-        })
+    from subscriptions.snapshot import compile_snapshot
+
+    if model.config.web_password is None:
+        raise ValueError("web.password is required to build the website")
+    rendered, context = _compile_subscriptions(model)
+    snapshot = compile_snapshot(model.config, rendered, context)
+    out = project_path("web", "generated", "snapshot.ts")
     _write_private(
         out,
         "import 'server-only';\n\n"
-        "export type GeneratedSubscription = {\n"
-        "  id: string;\n"
-        "  token: string;\n"
-        "  contentType: string;\n"
-        "  body: string;\n"
-        "  status: 200 | 503;\n"
-        "};\n\n"
-        f"export const subscriptions: GeneratedSubscription[] = {json.dumps(items, indent=2)};\n",
+        "import type { Snapshot } from '../lib/subscription';\n\n"
+        f"export const snapshot: Snapshot = {json.dumps(snapshot, ensure_ascii=False, indent=2)};\n",
     )
-    return profiles
+    project_path("web", "generated", "subscriptions.ts").unlink(missing_ok=True)
+    return _write_subscriptions(rendered)
 
 
 def load_model(*, require_ssh: bool = False) -> Model:

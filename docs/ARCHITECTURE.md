@@ -7,9 +7,9 @@ Reef is a small declarative cluster deployment system. The operator maintains a 
 The first-phase product shape:
 
 - Use `just` as the only user entry point.
-- Use Python for configuration parsing, secret derivation, and file generation.
+- Use Python for configuration parsing, secret derivation, and snapshot compilation.
 - Use Ansible for remote deployment, upgrade, and deletion.
-- Use Next.js on Vercel to serve private subscription URLs.
+- Use Next.js on Vercel to filter snapshots and serve authenticated previews and subscriptions.
 - Use Docker-compatible Compose to run the local four-node integration test.
 
 ## Repository Layout
@@ -52,10 +52,10 @@ The first-phase product shape:
 │   └── fixtures/
 └── web/
     ├── app/
-    │   └── [token]/
-    │       └── route.ts
+    │   ├── route.ts
+    │   └── dump/route.ts
     └── generated/
-        └── subscriptions.ts
+        └── snapshot.ts
 ```
 
 `reef/` contains the core derived model and the thin command entry points used by `justfile`.
@@ -69,28 +69,29 @@ validation, fetching and filtering provider snapshots, resolving group reference
 validating proxy/group relay dependencies, and converting supported selection
 policies to Quantumult X. HTTP collections can combine named upstreams; shared
 URLs use one fetch per generation and the names prefix the selected nodes.
-An optional `relay` mapping generates direct/relayed endpoint copies and groups
-from provider display names. Every exit/pool path appears directly in `PROXY`;
-single-endpoint paths use proxies, and multi-endpoint paths use automatic groups.
-All available profiles
-receive the same node snapshot; HTTP provider URLs are consumed only during
-generation. `subscriptions/extension.py` validates the legacy
-`subscriptions.nodes` list using Reef's client-independent VLESS schema, and normalizes its protocol,
-transport, and TLS settings into the existing converter input. The normalized
-nodes are also the Mihomo output. `subscriptions/upstream.py` fetches optional
-upstream Clash subscriptions, merges them with normalized extension nodes, and
-validates the supported Quantumult X conversion inputs.
-`substore.py` verifies the pinned official Sub-Store bundle and invokes
-`substore.mjs`, an offline adapter around its parser and QX producer. The adapter
-receives only node data through stdin and never inherits Reef secrets or prints
-converter diagnostics. The subscription templates own all static client
-configuration. A generation uses
-one merged upstream snapshot for the profiles and the Web artifacts.
-The local `just urls mihomo` preview uses the same renderer with only the two
-Mihomo profiles, writes to `build/subscriptions/mihomo/`, and bypasses QX
-conversion. With chains, normal generation publishes both Mihomo profiles and
-marks the QX URL unavailable (HTTP 503) until QX relay support exists. The generated
-Web module owns response bodies and statuses; the route serves them unchanged.
+Ordered `exits` and stable-ID `pools` generate all direct/relayed endpoint
+copies and groups from provider display names. Every exit/pool path appears in
+`PROXY`; single-endpoint paths use proxies and multi-endpoint paths use automatic
+groups. `subscriptions/extension.py` owns legacy standalone VLESS normalization.
+`subscriptions/upstream.py` owns fetching and QX compatibility; the pinned offline
+Sub-Store adapter owns supported QX node conversion.
+
+The Python compiler preserves original provider node names alongside display
+names and validates the full path graph once per build. It emits
+`web/generated/snapshot.ts`: server-only proxy/group data, fixed profile settings,
+preview metadata, the password digest, and QX output or its incompatibility reason.
+The root seed, SSH key, upstream URLs, and plaintext web password never enter it.
+The static subscription templates remain the sole owners of DNS and traffic rules.
+
+`web/lib/subscription.ts` owns authentication, query parsing, pool filtering,
+preview metadata selection, and dump serialization. Both route handlers call it;
+there is no second browser-side filtering implementation. The homepage returns
+server-rendered HTML only after authentication. `web/lib/preview.ts` renders only
+safe metadata; small static assets handle form submission and copying the dump
+link. Requests do not fetch upstreams, run Python, or cache private responses.
+The old token route and `just urls` are removed. Internal file rendering remains
+for smoke and integration checks. QX relay export fails explicitly with HTTP 422
+while its preview remains available.
 With subscription nodes or providers and no cluster nodes, the core model has no
 routes or node secrets; the same subscription and Web rendering path works without deployment.
 `config.yaml` is the only private configuration input and is ignored by git.
@@ -114,7 +115,7 @@ build/
     └── <profile-output>
 
 web/generated/
-└── subscriptions.ts
+└── snapshot.ts
 ```
 
 `build/` and `web/generated/` do not go into git. They may contain remote connection information and subscription content.

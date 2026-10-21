@@ -4,6 +4,10 @@
 # Replace this placeholder if you copy the example instead.
 secret: "replace_with_64_lowercase_hex_chars"
 
+# Required for website builds; keep this independent from the root secret.
+web:
+  password: "replace-with-an-independent-random-access-key"
+
 # Optional for deployment: `just set-ssh-key ~/.ssh/id_ed25519` writes the key
 # as multiline ssh_private_key text. `just config-yaml` excludes it from CI output.
 
@@ -56,7 +60,7 @@ proxy-providers: {}
 #        sni: proxy.example.com
 
 # The three fixed profiles route through PROXY. Rules/DNS stay in the templates.
-# Omitting proxy-groups and relay keeps the existing PROXY/AUTO defaults.
+# Omitting proxy-groups and exits/pools keeps the existing PROXY/AUTO defaults.
 proxy-groups:
   - name: PROXY
     type: select
@@ -75,8 +79,8 @@ proxy-groups:
 #    use: [pool-a, owned]
 # First-version provider/group options are listed in docs/DESIGN.md.
 # For independently selectable intermediate and exit nodes, see
-# config.mihomo.example.yaml. Its relay mapping replaces explicit proxy-groups
-# and derives EXIT/RELAY names from endpoint providers. Preview: `just urls mihomo`.
+# config.mihomo.example.yaml. Its exits/pools replace explicit proxy-groups.
+# Preview with `just web-dev`, or publish with `just web-deploy`.
 # HTTP collections can replace url with upstreams: [{name: source, url: ...}].
 # Each source name adds a "source | " prefix to its nodes.
 # Existing subscriptions.upstream_urls / subscriptions.nodes still work, but

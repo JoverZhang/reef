@@ -84,7 +84,7 @@ def quantumult_x_nodes(proxies: list[dict[str, Any]]) -> list[dict[str, str]]:
         )
     compatible = [
         proxy for index, proxy in enumerate(proxies, start=1)
-        if _qx_supported(proxy, index)
+        if qx_supported(proxy, index)
     ]
     if not compatible:
         return []
@@ -100,7 +100,7 @@ def quantumult_x_nodes(proxies: list[dict[str, Any]]) -> list[dict[str, str]]:
     return [{"name": name, "line": line} for name, line in zip(names, lines, strict=True)]
 
 
-def _qx_supported(proxy: dict[str, Any], index: int) -> bool:
+def qx_supported(proxy: dict[str, Any], index: int = 1) -> bool:
     kind = proxy["type"]
     if kind not in {"http", "socks5", "anytls", "vless", "trojan"}:
         return False
