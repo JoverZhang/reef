@@ -85,6 +85,7 @@ pools:
 # DIRECT paths connect to the exit server without an intermediate.
 # Relays must support the exit transport, including UDP for Hysteria2.
 # Avoid include-all in relay groups: including exits can create a cycle.
-# QX previews are available; relay exports return HTTP 422 until supported.
+# QX uses Reef -> EXIT, RELAY -> pool/direct, and shared automatic POOL policies.
+# Unsupported protocols are omitted; an empty compatible exit or pool blocks QX export.
 # Preview: /?password=KEY&type=clash-geo&include1=Alpha,Beta
 # Export: /dump?password=KEY&type=clash-geo&include1=Alpha,Beta

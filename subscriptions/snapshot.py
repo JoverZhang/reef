@@ -20,7 +20,7 @@ def compile_snapshot(config, profiles: list[dict], context: dict) -> dict:
     provider_nodes = {node["name"]: node for node in context["provider_nodes"]}
 
     def metadata(node: dict, original_name: str | None = None) -> dict:
-        # Preview compatibility independently from the unresolved relay conversion.
+        # Protocol compatibility is independent of the client's relay mechanism.
         endpoint = {key: value for key, value in node.items() if key != "dialer-proxy"}
         try:
             supported = qx_supported(endpoint)
@@ -56,9 +56,10 @@ def compile_snapshot(config, profiles: list[dict], context: dict) -> dict:
         "groups": groups,
         "templates": {"clash": global_profile, "clash-geo": client},
         "qx": {
-            "body": qx_body,
+            "body": None if context.get("qx_relay") else qx_body,
+            "relay": context.get("qx_relay"),
             "choices": [member for member in qx_policy.split(", ")[1:] if "=" not in member],
             "error": None if "quantumult-x" in documents else
-                "Quantumult X relay conversion is not supported yet. Export would remove an intermediate hop; use a Mihomo profile.",
+                context.get("qx_error", "Quantumult X relay conversion requires automatic exits/pools. Native dialer-proxy chains require a Mihomo profile."),
         },
     }

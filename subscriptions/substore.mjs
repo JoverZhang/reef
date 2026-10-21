@@ -31,6 +31,14 @@ try {
   const output = module.namespace.produce(proxies, "QX");
   const lines = output.split("\n").filter(Boolean).map((line) => {
     const options = line.split(",");
+    // The pinned producer concatenates bare IPv6 addresses with the port.
+    // Bracket the address so the endpoint remains unambiguous.
+    const separator = options[0].indexOf("=");
+    const endpoint = options[0].slice(separator + 1);
+    if (!endpoint.startsWith("[") && endpoint.split(":").length > 2) {
+      const port = endpoint.lastIndexOf(":");
+      options[0] = `${options[0].slice(0, separator + 1)}[${endpoint.slice(0, port)}]${endpoint.slice(port)}`;
+    }
     // QX's VLESS TLS and WSS use obfs-host for SNI. The input validator
     // ensures any WebSocket Host matches SNI before these are combined.
     if (line.startsWith("vless=")) {

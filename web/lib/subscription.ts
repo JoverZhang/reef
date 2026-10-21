@@ -11,6 +11,11 @@ export type NodeInfo = {
 type Pool = { id: string; name: string; group: string; nodes: NodeInfo[] };
 type Proxy = { name: string; type: string; "dialer-proxy"?: string; [key: string]: unknown };
 type Group = { name: string; type: string; proxies: string[]; [key: string]: unknown };
+type QxRelay = {
+  sections: Record<string, string[]>;
+  nodes: { name: string; sourceName: string; line: string; rule: string }[];
+  policies: { name: string; kind: string; members: string[]; options: string[] }[];
+};
 
 export type Snapshot = {
   updatedAt: string;
@@ -21,7 +26,7 @@ export type Snapshot = {
   proxies: Proxy[];
   groups: Group[];
   templates: Record<"clash" | "clash-geo", Record<string, unknown>>;
-  qx: { body: string | null; error: string | null; choices: string[] };
+  qx: { body: string | null; error: string | null; choices: string[]; relay: QxRelay | null };
 };
 
 export class RequestError extends Error {
@@ -39,10 +44,11 @@ export type Preview = {
   otherNodes: NodeInfo[];
   pools: (Pool & { filter: string; selected: string[] })[];
   choices: string[];
+  relays: { name: string; choices: string[] }[];
   errors: string[];
 };
 
-export type Selection = { preview: Preview; proxies: Proxy[]; groups: Group[] };
+export type Selection = { preview: Preview; proxies: Proxy[]; groups: Group[]; qx: QxRelay | null };
 
 export function select(snapshot: Snapshot, params: URLSearchParams): Selection {
   // Authenticate before validating filters or revealing the available pool IDs.
@@ -67,10 +73,12 @@ export function select(snapshot: Snapshot, params: URLSearchParams): Selection {
     const filter = (params.get(`include${pool.id}`) ?? "").trim();
     const terms = filter.split(",").map(term => term.trim().toLowerCase()).filter(Boolean);
     if (filter && !terms.length) throw new RequestError(400, "Include filters must contain a search term.");
-    const selected = pool.nodes.filter(node => !terms.length || terms.some(term =>
+    const matched = pool.nodes.filter(node => !terms.length || terms.some(term =>
       node.originalName.toLowerCase().includes(term),
-    )).map(node => node.name);
-    if (!selected.length) errors.push(`include${pool.id} selects no nodes in ${pool.name}.`);
+    ));
+    const selected = matched.filter(node => type !== "qx" || node.qxSupported).map(node => node.name);
+    if (!matched.length) errors.push(`include${pool.id} selects no nodes in ${pool.name}.`);
+    else if (!selected.length) errors.push(`include${pool.id} selects no QX-compatible nodes in ${pool.name}.`);
     return { ...pool, filter, selected };
   });
   const poolNodes = new Set(pools.flatMap(pool => pool.nodes.map(node => node.name)));
@@ -86,12 +94,27 @@ export function select(snapshot: Snapshot, params: URLSearchParams): Selection {
     errors.push("Filtering removes a node required by another path. Adjust the pool filters.");
   }
   if (type === "qx" && snapshot.qx.error) errors.push(snapshot.qx.error);
+  const qx = type === "qx" && snapshot.qx.relay ? {
+    ...snapshot.qx.relay,
+    nodes: snapshot.qx.relay.nodes.filter(node => !poolNodes.has(node.sourceName) || selectedNodes.has(node.sourceName)),
+    policies: snapshot.qx.relay.policies.map(policy => ({
+      ...policy, members: poolGroups.get(policy.name) ?? [...policy.members],
+    })),
+  } : null;
+  if (qx) {
+    const known = new Set(["direct", "reject", ...qx.nodes.map(node => node.name), ...qx.policies.map(policy => policy.name)]);
+    if (qx.policies.some(policy => !policy.members.length || policy.members.some(name => !known.has(name)))) {
+      errors.push("QX filtering leaves an empty or unresolved policy. Adjust the pool filters.");
+    }
+  }
   return {
-    proxies, groups,
+    proxies, groups, qx,
     preview: {
       type, updatedAt: snapshot.updatedAt, exits: snapshot.exits, otherNodes: snapshot.otherNodes,
-      pools, choices: type === "qx" && snapshot.qx.body !== null
-        ? snapshot.qx.choices : groups.find(group => group.name === "PROXY")?.proxies ?? [], errors,
+      pools, choices: type === "qx" ? snapshot.qx.choices : groups.find(group => group.name === "PROXY")?.proxies ?? [],
+      relays: qx?.policies.filter(policy => policy.name.startsWith("RELAY | "))
+        .map(policy => ({ name: policy.name, choices: policy.members })) ?? [],
+      errors,
     },
   };
 }
@@ -102,6 +125,16 @@ export function dump(snapshot: Snapshot, selection: Selection): string {
   }
   const type = selection.preview.type;
   if (type === "qx") {
+    if (selection.qx) {
+      const { sections, nodes, policies } = selection.qx;
+      const selectedSections = {
+        ...sections,
+        server_local: nodes.map(node => node.line),
+        policy: policies.map(policy => `${policy.kind}=${policy.name}, ${[...policy.members, ...policy.options].join(", ")}`),
+        filter_local: [...new Set(nodes.map(node => node.rule)), ...sections.filter_local],
+      };
+      return Object.entries(selectedSections).map(([name, lines]) => `[${name}]\n${lines.join("\n")}`).join("\n\n") + "\n";
+    }
     if (snapshot.qx.body === null) throw new RequestError(422, "Quantumult X export is unavailable.");
     return snapshot.qx.body;
   }

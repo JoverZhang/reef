@@ -885,6 +885,7 @@ def _compile_subscriptions(
         nodes_by_name.setdefault(node["name"], node)
     context["upstream_proxies"] = list(nodes_by_name.values())
     has_chain = any("dialer-proxy" in node for node in context["upstream_proxies"])
+    qx_profile = next(p for p in context["profiles"] if p["id"] == "quantumult-x")
     if mihomo_only or has_chain:
         context["profiles"] = [p for p in context["profiles"] if p["id"] != "quantumult-x"]
     else:
@@ -892,6 +893,18 @@ def _compile_subscriptions(
     rendered = renderer.render(context)
     if hasattr(renderer, "validate"):
         renderer.validate(rendered, context)
+    if model.config.exit_providers and not mihomo_only:
+        from subscriptions.quantumult_x import UnsupportedRelay, compile_relay
+
+        try:
+            qx_rendered, context["qx_relay"] = compile_relay(
+                context, model.config.exit_providers, list(model.config.pools.values()),
+                qx_profile, renderer,
+            )
+        except UnsupportedRelay as error:
+            context["qx_error"] = str(error)
+        else:
+            rendered.append(qx_rendered)
     return rendered, context
 
 

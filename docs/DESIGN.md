@@ -314,10 +314,11 @@ retains its own filtered membership. Static settings are identical to the existi
 profile templates. A displayed path is a configuration option, not proof of live
 connectivity; clients perform their own probes.
 
-QX previews remain available, including unsupported endpoint/path explanations.
-Until equivalent relay conversion exists, any configuration containing a relay
-returns HTTP 422 on QX export. Never strip a hop, silently use a direct path, or
-publish a partially unchained configuration.
+QX previews show unsupported endpoints and the QX-specific selectors described
+below. Automatic exits/pools support QX relay export; unsupported manual chains,
+ambiguous relay addresses, or empty compatible collections return HTTP 422.
+Never strip a hop, silently use a direct path, or publish a partially unchained
+configuration.
 
 All preview, dump, and error responses use `Cache-Control: no-store`,
 `Referrer-Policy: no-referrer`, and no-index headers. Application and development
@@ -541,9 +542,57 @@ must match the deployed endpoint; if its server credentials change, update it.
 Use `just web-dev` for local preview and `just web-deploy` to publish a fresh
 snapshot. The global and rule-based Mihomo templates keep their existing behavior.
 The rule-based profile can still route China destinations directly; only traffic
-assigned to `PROXY` uses the chain. QX previews show compatibility, but relay dumps
-return 422 until equivalent conversion is available. Non-chain configurations
-retain QX export using the existing conversion contract.
+assigned to `PROXY` uses the chain. Non-chain configurations retain QX export
+using the existing conversion contract.
+
+### Quantumult X Client-side Relay
+
+Automatic `exits` and `pools` also generate a QX configuration. QX uses three
+selection levels because its rule-based relay cannot distinguish copies of the
+same exit address by node tag:
+
+- `Reef` selects `EXIT | <exit name>` or `POOL | <pool name>`.
+- `RELAY | <exit name>` selects any configured pool or `direct`. The first pool
+  is the default; direct is an explicit choice, never a failure fallback.
+- Each `POOL | <pool name>` automatically selects one compatible member. This
+  group is shared between exits and can itself be selected in `Reef`.
+
+An EXIT with one compatible endpoint is a node. With multiple compatible
+endpoints it is a `url-latency-benchmark` group. Unsupported protocols/options
+are omitted visibly. Every exit and every request-filtered pool must retain at
+least one compatible endpoint. The preview shows the exported choices and relay
+selectors, while unsupported endpoints remain visible. The same `includeN`
+filters apply before QX compatibility filtering; a resulting empty pool blocks
+export rather than changing the chain.
+
+Proxy traffic rules use `via-interface=%TUN%`. Endpoint-address rules route the
+resulting exit connection through its RELAY selector without reinjecting it.
+Pool-address rules use `direct`, so selecting a pool in Reef does not recurse.
+The proxy rule resources listed by the existing template are fetched at
+publication time and embedded with their assigned policies and relay flags.
+The direct rule resource remains remote. There is no client-side resource parser
+or request-time fetch. Fetch/parse failures abort publication.
+Node domains are resolved once per publication to one IPv4 address, or IPv6 when
+IPv4 is unavailable, preserving the original TLS SNI and WebSocket Host. These
+QX-only address snapshots avoid routing loops caused by endpoint DNS changes;
+republish to refresh them. Mihomo retains its original node addresses and DNS.
+
+Different exits cannot share a resolved address, and an exit cannot share one
+with a pool. Such ambiguous topologies block QX export without exposing addresses
+in preview errors. Multiple protocols of the same exit may share an address.
+Only automatic two-hop paths are compiled; arbitrary native `dialer-proxy`
+chains still require Mihomo.
+
+Use QX filter mode. Its internal endpoint probes do not establish that a complete
+relay path works; automatic choices are based on QX's own measurements. Native
+client verification must check network activity for both hops and the observed
+exit address. This does not change QX's existing DNS settings or promise Mihomo's
+explicit DoH-through-PROXY contract: QX uses its own remote destination resolution
+and local DNS for rule evaluation. No claim of native connectivity is made by
+the preview or generator tests.
+
+This follows the [QX relay mechanism](https://github.com/crossutility/Quantumult-X/issues/100)
+and [QX policy/node syntax](https://github.com/crossutility/Quantumult-X/blob/master/sample.conf).
 
 The previous `subscriptions.upstream_urls` and `subscriptions.nodes` input
 continues to work for existing installations. It cannot be mixed with the new

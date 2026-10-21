@@ -14,7 +14,7 @@ import yaml
 
 from reef import core
 from reef.cli import config_yaml
-from subscriptions import upstream
+from subscriptions import quantumult_x, upstream
 
 
 SECRET = "34" * 32
@@ -61,6 +61,9 @@ class MihomoInputTests(unittest.TestCase):
         patcher = patch.object(core, "project_path", side_effect=isolated)
         patcher.start()
         self.addCleanup(patcher.stop)
+        resolver = patch.object(quantumult_x.socket, "getaddrinfo", side_effect=OSError("Fictional node DNS"))
+        resolver.start()
+        self.addCleanup(resolver.stop)
         self.config = copy.deepcopy(CONFIG)
 
     def generate(self, document=None, *, mihomo_only=False):
@@ -430,7 +433,7 @@ class MihomoInputTests(unittest.TestCase):
         generated = (self.root / "web/generated/snapshot.ts").read_text()
         web = json.loads(generated.split("snapshot: Snapshot = ", 1)[1].rstrip(";\n"))
         self.assertIsNone(web["qx"]["body"])
-        self.assertIn("relay conversion", web["qx"]["error"])
+        self.assertIn("could not resolve", web["qx"]["error"])
 
     def test_automatic_groups_follow_renaming_and_filtered_endpoint_counts(self):
         config = self.automatic_relay_config()

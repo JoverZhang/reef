@@ -37,6 +37,7 @@ The first-phase product shape:
 │   ├── profiles.yaml
 │   ├── extension.py
 │   ├── mihomo.py
+│   ├── quantumult_x.py
 │   ├── render.py
 │   ├── upstream.py
 │   ├── substore.py
@@ -75,11 +76,19 @@ copies and groups from provider display names. Every exit/pool path appears in
 groups. `subscriptions/extension.py` owns legacy standalone VLESS normalization.
 `subscriptions/upstream.py` owns fetching and QX compatibility; the pinned offline
 Sub-Store adapter owns supported QX node conversion.
+`subscriptions/quantumult_x.py` compiles automatic exits/pools into QX's separate
+EXIT, RELAY, and POOL choices. It resolves QX endpoint addresses at publication
+time while preserving TLS identity, rejects ambiguous address ownership, and
+embeds the template's proxy rule resources with TUN reinjection. Direct rule
+resources retain their existing behavior. Native manual chains remain unsupported.
 
 The Python compiler preserves original provider node names alongside display
 names and validates the full path graph once per build. It emits
 `web/generated/snapshot.ts`: server-only proxy/group data, fixed profile settings,
 preview metadata, the password digest, and QX output or its incompatibility reason.
+For automatic QX relays it stores converted node lines, socket-routing rules,
+policies, and static sections; request-time filtering selects pool memberships
+and serializes the same structure without invoking the converter again.
 The root seed, SSH key, upstream URLs, and plaintext web password never enter it.
 The static subscription templates remain the sole owners of DNS and traffic rules.
 
@@ -90,8 +99,8 @@ server-rendered HTML only after authentication. `web/lib/preview.ts` renders onl
 safe metadata; small static assets handle form submission and copying the dump
 link. Requests do not fetch upstreams, run Python, or cache private responses.
 The old token route and `just urls` are removed. Internal file rendering remains
-for smoke and integration checks. QX relay export fails explicitly with HTTP 422
-while its preview remains available.
+for smoke and integration checks. Unsupported QX topologies or filters that leave
+no compatible members fail explicitly with HTTP 422 while preview stays available.
 With subscription nodes or providers and no cluster nodes, the core model has no
 routes or node secrets; the same subscription and Web rendering path works without deployment.
 `config.yaml` is the only private configuration input and is ignored by git.

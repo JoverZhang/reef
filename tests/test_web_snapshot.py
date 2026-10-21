@@ -4,6 +4,7 @@ import copy
 import hashlib
 import io
 import json
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -13,12 +14,12 @@ from unittest.mock import patch
 import yaml
 
 from reef import core
-from subscriptions import upstream
+from subscriptions import quantumult_x, upstream
 
 
 PASSWORD = "fictional-preview-key-" * 3
 URL = "https://source.example.invalid/private-upstream-token"
-NODE = {"type": "http", "server": "proxy.example.invalid", "port": 8443,
+NODE = {"type": "http", "server": "198.51.100.10", "port": 8443,
         "password": "fictional-node-password"}
 NODES = [{**NODE, "name": name} for name in ("Alpha 01", "Beta 02", "Gamma 03", "Removed 04")]
 CONFIG = {
@@ -29,9 +30,10 @@ CONFIG = {
                    "exclude-filter": "Removed"},
         "pool-b": {"type": "http", "upstreams": [{"name": "source-a", "url": URL}],
                    "exclude-filter": "Removed"},
-        "Endpoint A": {"type": "inline", "payload": [{**NODE, "name": "HTTP"}]},
+        "Endpoint A": {"type": "inline", "payload": [{**NODE, "name": "HTTP", "server": "192.0.2.10"}]},
         "Endpoint B": {"type": "inline", "payload": [
-            {**NODE, "name": "HTTP"}, {**NODE, "name": "Hysteria2", "type": "hysteria2"},
+            {**NODE, "name": "HTTP", "server": "192.0.2.11"},
+            {**NODE, "name": "Hysteria2", "type": "hysteria2", "server": "192.0.2.11"},
         ]},
     },
     "exits": ["Endpoint A", "Endpoint B"],
@@ -49,6 +51,10 @@ class WebSnapshotTests(unittest.TestCase):
                              self.root.joinpath(*parts) if parts[0] in {"build", "web"} else original(*parts))
         patcher.start()
         self.addCleanup(patcher.stop)
+        rules = patch.object(quantumult_x, "urlopen", side_effect=lambda *a, **kw: io.BytesIO(
+            b"# Fictional rules\nHOST-SUFFIX,service.example.invalid,Proxy\nIP-CIDR,203.0.113.0/24,Proxy\n"))
+        rules.start()
+        self.addCleanup(rules.stop)
         self.snapshot = self.build(CONFIG)
 
     def build(self, config):
@@ -158,12 +164,157 @@ class WebSnapshotTests(unittest.TestCase):
         self.assertEqual(document["proxies"][0]["password"], "off")
         self.assertEqual(document["proxies"][0]["username"], "yes")
 
-    def test_qx_relay_preview_does_not_authorize_an_unchained_export(self):
+    def test_qx_uses_three_selection_levels_and_collapses_supported_exit_protocols(self):
         preview = self.request({"type": "qx"})
         self.assertEqual(preview["status"], 200)
-        self.assertIn("relay conversion", preview["body"])
+        self.assertFalse(preview["preview"]["errors"])
         self.assertIn("Protocol/options unavailable in QX", preview["body"])
-        self.assertEqual(self.request({"type": "qx"}, download=True)["status"], 422)
+        self.assertEqual(preview["preview"]["choices"], ["EXIT | Endpoint A", "EXIT | Endpoint B", "POOL | pool-a", "POOL | pool-b"])
+        self.assertEqual(preview["preview"]["relays"], [
+            {"name": f"RELAY | Endpoint {name}", "choices": ["POOL | pool-a", "POOL | pool-b", "direct"]}
+            for name in ("A", "B")
+        ])
+        result = self.request({"type": "qx"}, download=True)
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["body"], (self.root / "build/subscriptions/quantumult-x.conf").read_text())
+        self.assertIn("tag=EXIT | Endpoint B", result["body"])
+        self.assertNotIn("url-latency-benchmark=EXIT", result["body"])
+        self.assertNotIn("Hysteria2", result["body"])
+
+    def test_qx_business_rules_reinject_once_and_endpoint_rules_select_the_intermediate(self):
+        body = self.request({"type": "qx"}, download=True)["body"]
+        sections = quantumult_x._sections(body)
+        rules = sections["filter_local"]
+        for exit_name, address in (("A", "192.0.2.10"), ("B", "192.0.2.11")):
+            self.assertIn(f"ip-cidr, {address}/32, RELAY | Endpoint {exit_name}", rules)
+        self.assertIn("ip-cidr, 198.51.100.10/32, direct", rules)
+        self.assertIn("host-suffix, service.example.invalid, Reef, via-interface=%TUN%", rules)
+        self.assertIn("ip-cidr, 203.0.113.0/24, Reef, via-interface=%TUN%", rules)
+        self.assertEqual(rules[-1], "final, Reef, via-interface=%TUN%")
+        for rule in rules:
+            fields = rule.split(", ")
+            if "Reef" in fields:
+                self.assertEqual(fields[-1], "via-interface=%TUN%")
+            else:
+                self.assertNotIn("via-interface=", rule)
+        self.assertTrue(all("force-policy=direct" in line for line in sections["filter_remote"]))
+        self.assertNotIn("resource_parser_url", body)
+
+    def test_qx_filters_shared_nodes_independently_without_mutating_the_snapshot(self):
+        all_nodes = self.request({"type": "qx"}, download=True)
+        result = self.request({"type": "qx", "include1": "Alpha", "include7": "Beta"}, download=True)
+        body = result["body"]
+        self.assertEqual(result["status"], 200)
+        self.assertIn("url-latency-benchmark=POOL | pool-a, source-a | Alpha 01, check-interval", body)
+        self.assertIn("url-latency-benchmark=POOL | pool-b, source-a | Beta 02, check-interval", body)
+        self.assertNotIn("Gamma 03", body)
+        self.assertEqual(body.count("tag=source-a | Alpha 01"), 1)
+        self.assertEqual(all_nodes, self.request({"type": "qx"}, download=True))
+
+    def test_qx_filter_matching_only_unsupported_protocols_blocks_export(self):
+        nodes = NODES + [{**NODE, "name": "Unsupported", "type": "hysteria2"}]
+        with patch(__name__ + ".NODES", nodes):
+            snapshot = self.build(CONFIG)
+        query = {"type": "qx", "include1": "Unsupported"}
+        preview = self.request(query, snapshot=snapshot)
+        self.assertEqual(preview["preview"]["pools"][0]["selected"], [])
+        self.assertIn("Protocol/options unavailable in QX", preview["body"])
+        self.assertEqual(self.request(query, snapshot=snapshot, download=True)["status"], 422)
+        self.assertEqual(self.request({**query, "type": "clash"}, snapshot=snapshot, download=True)["status"], 200)
+
+    def test_qx_multiple_supported_protocols_share_the_exit_relay_selector(self):
+        config = copy.deepcopy(CONFIG)
+        config["proxy-providers"]["Endpoint B"]["payload"].append({
+            **NODE, "type": "trojan", "name": "Trojan", "server": "192.0.2.11", "port": 443,
+        })
+        snapshot = self.build(config)
+        result = self.request({"type": "qx"}, snapshot=snapshot, download=True)
+        self.assertEqual(result["status"], 200)
+        self.assertIn("url-latency-benchmark=EXIT | Endpoint B, EXIT | Endpoint B | HTTP, EXIT | Endpoint B | Trojan,", result["body"])
+        self.assertEqual(result["body"].count("ip-cidr, 192.0.2.11/32, RELAY | Endpoint B"), 1)
+
+    def test_qx_ambiguous_addresses_and_empty_exits_block_only_qx(self):
+        for changes in ({"server": "192.0.2.10"}, {"server": NODE["server"]}, {"type": "hysteria2"}):
+            config = copy.deepcopy(CONFIG)
+            config["proxy-providers"]["Endpoint B"]["payload"][0].update(changes)
+            snapshot = self.build(config)
+            result = self.request({"type": "qx"}, snapshot=snapshot, download=True)
+            self.assertEqual(result["status"], 422)
+            self.assertNotIn("192.0.2.", result["body"])
+            self.assertNotIn(NODE["server"], result["body"])
+            self.assertEqual(self.request({"type": "clash"}, snapshot=snapshot, download=True)["status"], 200)
+
+    def test_qx_rule_failure_preserves_artifacts_and_redacts_response_details(self):
+        before = {str(path): path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        for response in (b"private-response", b"", b"FINAL,private-response,Proxy", b"HOST,example.invalid,Proxy,unexpected"):
+            with patch.object(quantumult_x, "urlopen", side_effect=lambda *a, **kw: io.BytesIO(response)):
+                with self.assertRaisesRegex(ValueError, "QX rule resource #1") as error:
+                    self.build(CONFIG)
+            self.assertNotIn("private-response", str(error.exception))
+            self.assertEqual(before, {str(path): path.read_bytes() for path in self.root.rglob("*") if path.is_file()})
+
+    def test_qx_pins_dns_once_preserving_tls_identity_and_certificate_pins(self):
+        config = copy.deepcopy(CONFIG)
+        config["proxy-providers"]["Endpoint A"]["payload"] = [
+            {**NODE, "name": "Trojan", "type": "trojan", "server": "exit.example.invalid", "fingerprint": "ab" * 32},
+            {**NODE, "name": "HTTPS", "tls": True, "server": "exit.example.invalid", "port": 443},
+        ]
+        records = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::10", 0, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.10", 0)),
+        ]
+        with patch.object(quantumult_x.socket, "getaddrinfo", return_value=records) as lookup:
+            snapshot = self.build(config)
+        self.assertEqual(lookup.call_count, 1)
+        qx = self.request({"type": "qx"}, snapshot=snapshot, download=True)
+        self.assertEqual(qx["status"], 200)
+        lines = quantumult_x._sections(qx["body"])["server_local"]
+        owned = [line for line in lines if "tag=EXIT | Endpoint A | " in line]
+        self.assertEqual(len(owned), 2)
+        self.assertTrue(all("=192.0.2.10:" in line and "tls-host=exit.example.invalid" in line for line in owned))
+        self.assertIn("tls-cert-sha256=" + "ab" * 32, owned[0])
+        self.assertIn("tls-verification=true", owned[0])
+        mihomo = yaml.safe_load(self.request({"type": "clash"}, snapshot=snapshot, download=True)["body"])
+        self.assertTrue(any(node["server"] == "exit.example.invalid" for node in mihomo["proxies"]))
+
+    def test_qx_ipv6_socket_routes_and_websocket_host_survive_pinning(self):
+        config = copy.deepcopy(CONFIG)
+        config["proxy-providers"]["Endpoint A"]["payload"] = [{
+            "name": "WebSocket", "type": "vless", "server": "exit.example.invalid", "port": 443,
+            "uuid": "11111111-2222-4333-8444-555555555555", "tls": True, "network": "ws",
+            "ws-opts": {"path": "/tunnel", "headers": {"Host": "websocket.example.invalid"}},
+        }]
+        records = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::10", 0, 0, 0))]
+        with patch.object(quantumult_x.socket, "getaddrinfo", return_value=records):
+            snapshot = self.build(config)
+        result = self.request({"type": "qx"}, snapshot=snapshot, download=True)
+        self.assertEqual(result["status"], 200)
+        self.assertIn("vless=[2001:db8::10]:443", result["body"])
+        self.assertIn("ip6-cidr, 2001:db8::10/128, RELAY | Endpoint A", result["body"])
+        self.assertIn("obfs-host=websocket.example.invalid", result["body"])
+        self.assertIn("obfs-uri=/tunnel", result["body"])
+
+    def test_qx_dns_failure_does_not_expose_hostnames_or_create_a_direct_fallback(self):
+        config = copy.deepcopy(CONFIG)
+        config["proxy-providers"]["Endpoint A"]["payload"][0]["server"] = "private-host.example.invalid"
+        with patch.object(quantumult_x.socket, "getaddrinfo", side_effect=OSError("private-host.example.invalid")):
+            snapshot = self.build(config)
+        result = self.request({"type": "qx"}, snapshot=snapshot, download=True)
+        self.assertEqual(result["status"], 422)
+        self.assertIn("could not resolve", result["body"])
+        self.assertNotIn("private-host", result["body"])
+
+    def test_qx_generated_names_cannot_silently_replace_a_pool_node(self):
+        config = copy.deepcopy(CONFIG)
+        config["proxy-providers"]["pool-a"] = {
+            "type": "inline", "payload": [{**NODE, "name": "EXIT | Endpoint A"}],
+        }
+        snapshot = self.build(config)
+        result = self.request({"type": "qx"}, snapshot=snapshot, download=True)
+        self.assertEqual(result["status"], 422)
+        self.assertIn("names conflict", result["body"])
+
+    def test_non_chain_qx_export_is_unchanged(self):
         direct = self.build({"secret": CONFIG["secret"], "web": CONFIG["web"], "proxies": NODES[:1]})
         qx = self.request({"type": "qx"}, download=True, snapshot=direct)
         self.assertEqual(qx["status"], 200)
