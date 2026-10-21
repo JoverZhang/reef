@@ -23,7 +23,9 @@ from cryptography.x509.oid import NameOID
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from subscriptions.extension import parse_extend_nodes
-from subscriptions.mihomo import INPUT_KEYS, load_providers as load_proxy_providers, validate_input
+from subscriptions.mihomo import (
+    INPUT_KEYS, load_providers as load_proxy_providers, relay_groups, validate_input,
+)
 from subscriptions.upstream import (
     load_nodes as load_upstream_nodes,
     quantumult_x_nodes,
@@ -79,6 +81,7 @@ class Config:
     extend_proxies: list[dict[str, Any]]
     proxy_providers: dict[str, dict[str, Any]]
     proxy_groups: list[dict[str, Any]]
+    relay: dict[str, list[str]]
 
 
 @dataclass(frozen=True)
@@ -228,6 +231,7 @@ def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config
         extend_proxies=extend_proxies,
         proxy_providers=proxy_providers,
         proxy_groups=values.get("proxy-groups", []),
+        relay=values.get("relay", {}),
     )
 
 
@@ -848,7 +852,13 @@ def render_subscriptions(
         model.config.upstream_urls, model.config.extend_proxies
     )
     context["top_proxy_names"] = [node["name"] for node in context["upstream_proxies"]]
-    provider_nodes, context["provider_members"] = load_proxy_providers(model.config.proxy_providers)
+    provider_nodes, context["provider_members"] = load_proxy_providers(
+        model.config.proxy_providers, model.config.relay,
+    )
+    if model.config.relay:
+        provider_nodes, context["proxy_groups"] = relay_groups(
+            provider_nodes, context["provider_members"], model.config.relay,
+        )
     nodes_by_name = {node["name"]: node for node in context["upstream_proxies"]}
     for node in provider_nodes:
         if node["name"] in nodes_by_name and nodes_by_name[node["name"]] != node:

@@ -69,6 +69,8 @@ validation, fetching and filtering provider snapshots, resolving group reference
 validating proxy/group relay dependencies, and converting supported selection
 policies to Quantumult X. HTTP collections can combine named upstreams; shared
 URLs use one fetch per generation and the names prefix the selected nodes.
+An optional `relay` mapping generates direct/relayed endpoint copies and groups
+from provider display names, omitting single-endpoint DIRECT groups after filtering.
 All available profiles
 receive the same node snapshot; HTTP provider URLs are consumed only during
 generation. `subscriptions/extension.py` validates the legacy

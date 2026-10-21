@@ -56,7 +56,7 @@ proxy-providers: {}
 #        sni: proxy.example.com
 
 # The three fixed profiles route through PROXY. Rules/DNS stay in the templates.
-# Omitting proxy-groups keeps the existing PROXY/AUTO defaults.
+# Omitting proxy-groups and relay keeps the existing PROXY/AUTO defaults.
 proxy-groups:
   - name: PROXY
     type: select
@@ -75,7 +75,8 @@ proxy-groups:
 #    use: [pool-a, owned]
 # First-version provider/group options are listed in docs/DESIGN.md.
 # For independently selectable intermediate and exit nodes, see
-# config.mihomo.example.yaml and generate a preview with `just urls mihomo`.
+# config.mihomo.example.yaml. Its relay mapping replaces explicit proxy-groups
+# and derives EXIT/RELAY names from endpoint providers. Preview: `just urls mihomo`.
 # HTTP collections can replace url with upstreams: [{name: source, url: ...}].
 # Each source name adds a "source | " prefix to its nodes.
 # Existing subscriptions.upstream_urls / subscriptions.nodes still work, but

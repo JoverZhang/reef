@@ -348,6 +348,151 @@ class MihomoInputTests(unittest.TestCase):
             ],
         }
 
+    def automatic_relay_config(self):
+        return {
+            "secret": SECRET,
+            "proxy-providers": {
+                "pool-a": {"type": "http", "url": URL, "filter": "Sample-A"},
+                "pool-b": {"type": "http", "url": URL, "filter": "Sample-B"},
+                "Endpoint A": {"type": "inline", "payload": [{**LOCAL, "name": "Trojan"}]},
+                "Endpoint B": {"type": "inline", "payload": [
+                    {**LOCAL, "name": "Trojan", "server": "endpoint-b.example.test"},
+                    {"name": "Hysteria2", "type": "hysteria2", "server": "endpoint-b.example.test",
+                     "port": 8443, "password": "test-password"},
+                ]},
+            },
+            "relay": {"Endpoint A": ["pool-b", "pool-a"], "Endpoint B": ["pool-a", "pool-b"]},
+        }
+
+    def test_automatic_relay_uses_endpoint_names_and_collapses_only_single_direct_paths(self):
+        config = self.automatic_relay_config()
+        original = copy.deepcopy(config)
+        with patch.object(upstream, "urlopen", return_value=self.response()) as fetch:
+            profiles = self.generate(config)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(config, original)
+        self.assertEqual([p["id"] for p in profiles], ["client", "linux-server"])
+        for profile in profiles:
+            doc = yaml.safe_load(profile["body"])
+            groups = {g["name"]: g for g in doc["proxy-groups"]}
+            nodes = {n["name"]: n for n in doc["proxies"]}
+            self.assertEqual(groups["PROXY"]["proxies"], [
+                "EXIT | Endpoint A | RELAY", "Endpoint A | Trojan | DIRECT",
+                "EXIT | Endpoint B | RELAY", "EXIT | Endpoint B | DIRECT",
+                "POOL | pool-a", "POOL | pool-b",
+            ])
+            self.assertNotIn("EXIT | Endpoint A | DIRECT", groups)
+            for endpoint, pools in config["relay"].items():
+                self.assertEqual(groups[f"RELAY | {endpoint}"]["proxies"], [f"POOL | {p}" for p in pools])
+                spec = config["proxy-providers"][endpoint]
+                for path in ("DIRECT", "RELAY"):
+                    members = []
+                    for source in spec["payload"]:
+                        name = f"{endpoint} | {source['name']} | {path}"
+                        expected = {**source, "name": name}
+                        if path == "RELAY":
+                            expected["dialer-proxy"] = f"RELAY | {endpoint}"
+                        self.assertEqual(nodes[name], expected)
+                        members.append(name)
+                    if path == "RELAY" or len(members) > 1:
+                        group = groups[f"EXIT | {endpoint} | {path}"]
+                        self.assertEqual(group["type"], "url-test")
+                        self.assertEqual(group["proxies"], members)
+                        self.assertEqual(group["interval"], 300)
+            self.assertEqual(groups["POOL | pool-a"]["proxies"], [NODES[0]["name"]])
+            self.assertEqual(groups["POOL | pool-b"]["proxies"], [NODES[1]["name"]])
+            self.assertEqual(nodes[NODES[0]["name"]], NODES[0])
+            self.assertEqual(len(nodes), 8)
+            self.assertNotIn(URL, profile["body"])
+        generated = (self.root / "web/generated/subscriptions.ts").read_text()
+        web = json.loads(generated.split("GeneratedSubscription[] = ", 1)[1].rstrip(";\n"))
+        self.assertEqual([p["status"] for p in web], [200, 200, 503])
+
+    def test_automatic_groups_follow_renaming_and_filtered_endpoint_counts(self):
+        config = self.automatic_relay_config()
+        providers = config["proxy-providers"]
+        providers["Endpoint C"] = providers.pop("Endpoint A")
+        config["relay"] = {"Endpoint C": config["relay"].pop("Endpoint A"), **config["relay"]}
+        providers["Endpoint C"]["payload"].append({**NODES[0], "name": "HTTP"})
+        providers["Endpoint B"]["exclude-type"] = "hysteria2"
+        with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
+            doc = yaml.safe_load(self.generate(config)[0]["body"])
+        groups = {g["name"]: g for g in doc["proxy-groups"]}
+        self.assertNotIn("Endpoint A", str(doc))
+        self.assertEqual(groups["EXIT | Endpoint C | DIRECT"]["proxies"], [
+            "Endpoint C | Trojan | DIRECT", "Endpoint C | HTTP | DIRECT",
+        ])
+        self.assertIn("Endpoint B | Trojan | DIRECT", groups["PROXY"]["proxies"])
+        self.assertNotIn("EXIT | Endpoint B | DIRECT", groups)
+        self.assertEqual(groups["RELAY | Endpoint C"]["proxies"], ["POOL | pool-b", "POOL | pool-a"])
+        # Filtering a formerly multi-endpoint provider to one removes its group.
+        providers["Endpoint C"]["filter"] = "^Trojan$"
+        with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
+            doc = yaml.safe_load(self.generate(config)[0]["body"])
+        self.assertIn("Endpoint C | Trojan | DIRECT", doc["proxy-groups"][0]["proxies"])
+        self.assertNotIn("EXIT | Endpoint C | DIRECT", [g["name"] for g in doc["proxy-groups"]])
+        before = self.artifacts()
+        providers["Endpoint C"]["filter"] = "^unmatched$"
+        with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
+            with self.assertRaisesRegex(ValueError, "no nodes after filtering"):
+                self.generate(config)
+        self.assertEqual(self.artifacts(), before)
+
+    def test_automatic_relay_rejects_invalid_relations_without_echoing_names(self):
+        for relay in (
+            None, [], {}, {"private-exit": ["pool-a"]}, {"pool-a": ["pool-b"]},
+            {"Endpoint A": []}, {"Endpoint A": "private-pool"}, {"Endpoint A": [None]},
+            {"Endpoint A": ["private-pool"]}, {"Endpoint A": ["pool-a", "pool-a"]},
+            {"Endpoint A": ["Endpoint A"]},
+            {"Endpoint A": ["Endpoint B"], "Endpoint B": ["pool-a"]},
+        ):
+            config = self.automatic_relay_config()
+            config["relay"] = relay
+            with self.subTest(relay=relay), self.assertRaises(ValueError) as error:
+                core.parse_config(config)
+            self.assertNotIn("private-", str(error.exception))
+        for setting in ("override", "payload", "proxy-groups"):
+            config = self.automatic_relay_config()
+            spec = config["proxy-providers"]["Endpoint A"]
+            if setting == "override":
+                spec["override"] = {"dialer-proxy": "private-target"}
+            elif setting == "payload":
+                spec["payload"][0]["dialer-proxy"] = "private-target"
+            else:
+                config[setting] = [{"name": "PROXY", "type": "select", "proxies": ["DIRECT"]}]
+            with self.subTest(setting=setting), self.assertRaises(ValueError) as error:
+                core.parse_config(config)
+            self.assertNotIn("private-", str(error.exception))
+        self.assertEqual(self.artifacts(), {})
+
+    def test_automatic_relay_detects_generated_name_conflicts_and_cycles(self):
+        for name, changes in (
+            ("Endpoint A | Trojan | DIRECT", {"port": 9443}),
+            ("EXIT | Endpoint A | RELAY", {}),
+            ("Sample-A 01", {"dialer-proxy": "EXIT | Endpoint A | RELAY"}),
+        ):
+            config = self.automatic_relay_config()
+            config["proxy-providers"]["pool-a"] = {
+                "type": "inline", "payload": [{**LOCAL, "name": name, **changes}],
+            }
+            with patch.object(upstream, "urlopen", return_value=self.response()), self.assertRaises(ValueError):
+                self.generate(config)
+        self.assertEqual(self.artifacts(), {})
+
+    def test_automatic_relay_exports_and_public_example_uses_the_same_schema(self):
+        config = self.automatic_relay_config()
+        core.write_config(config, self.root / "config.yaml")
+        output = io.StringIO()
+        with patch.object(upstream, "urlopen", side_effect=AssertionError("unexpected fetch")), redirect_stdout(output):
+            self.assertEqual(config_yaml.main(), 0)
+        self.assertEqual(core.parse_config_yaml(output.getvalue()), config)
+        example = core.load_config(core.ROOT / "config.mihomo.example.yaml")
+        example["secret"] = SECRET
+        with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
+            doc = yaml.safe_load(self.generate(example)[0]["body"])
+        self.assertIn("Endpoint A | VLESS | DIRECT", doc["proxy-groups"][0]["proxies"])
+        self.assertIn("EXIT | Endpoint B | DIRECT", doc["proxy-groups"][0]["proxies"])
+
     def test_mihomo_preview_chains_two_exits_through_subscription_selection(self):
         with patch.object(upstream, "urlopen", return_value=self.response()):
             self.generate()

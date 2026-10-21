@@ -27,13 +27,11 @@ proxy-providers:
     filter: "Sample-A|Sample-B"
     exclude-filter: "Sample-Excluded"
 
-  # Share credentials, but give direct and relayed paths distinct node names.
-  exit-a-direct:
+  # The provider key is the display name used by EXIT and RELAY groups.
+  Endpoint A:
     type: inline
-    override:
-      additional-suffix: " | DIRECT"
-    payload: &exit_a_nodes
-      - name: "Endpoint A | VLESS"
+    payload:
+      - name: VLESS
         type: vless
         server: endpoint-a.example.invalid
         port: 8443
@@ -47,19 +45,10 @@ proxy-providers:
           public-key: "replace_with_endpoint_a_reality_public_key"
           short-id: ""
 
-  exit-a-relay:
+  Endpoint B:
     type: inline
-    payload: *exit_a_nodes
-    override:
-      additional-suffix: " | RELAY"
-      dialer-proxy: "RELAY | A"
-
-  exit-b-direct:
-    type: inline
-    override:
-      additional-suffix: " | DIRECT"
-    payload: &exit_b_nodes
-      - name: "Endpoint B | Trojan"
+    payload:
+      - name: Trojan
         type: trojan
         server: endpoint-b.example.invalid
         port: 9443
@@ -68,7 +57,7 @@ proxy-providers:
         skip-cert-verify: false
         # For a self-signed certificate, supply its SHA-256 pin:
         # fingerprint: "replace_with_64_hex_certificate_fingerprint"
-      - name: "Endpoint B | Hysteria2"
+      - name: Hysteria2
         type: hysteria2
         server: endpoint-b.example.invalid
         port: 9443
@@ -77,61 +66,18 @@ proxy-providers:
         skip-cert-verify: false
         udp: true
 
-  exit-b-relay:
-    type: inline
-    payload: *exit_b_nodes
-    override:
-      additional-suffix: " | RELAY"
-      dialer-proxy: "RELAY | B"
+# This replaces explicit proxy-groups. The first pool is each exit's default.
+# Groups follow provider names, without additional aliases or display names.
+relay:
+  Endpoint A: [pool-a, pool-b, pool-c]
+  Endpoint B: [pool-c, pool-a, pool-b]
 
-proxy-groups:
-  # Choose an exit path or use a subscription pool as the final exit.
-  - name: PROXY
-    type: select
-    proxies:
-      - "EXIT | A | RELAY"
-      - "EXIT | A | DIRECT"
-      - "EXIT | B | RELAY"
-      - "EXIT | B | DIRECT"
-      - "POOL | A"
-      - "POOL | B"
-      - "POOL | C"
-
-  # Protocol selection and probe history are independent for each path.
-  - name: "EXIT | A | RELAY"
-    type: url-test
-    use: [exit-a-relay]
-  - name: "EXIT | A | DIRECT"
-    type: url-test
-    use: [exit-a-direct]
-  - name: "EXIT | B | RELAY"
-    type: url-test
-    use: [exit-b-relay]
-  - name: "EXIT | B | DIRECT"
-    type: url-test
-    use: [exit-b-direct]
-
-  # Each relayed exit remembers its own pool choice.
-  - name: "RELAY | A"
-    type: select
-    proxies: ["POOL | A", "POOL | B", "POOL | C"]
-  - name: "RELAY | B"
-    type: select
-    proxies: ["POOL | A", "POOL | B", "POOL | C"]
-
-  # The same pool can be an intermediate or a final exit.
-  - name: "POOL | A"
-    type: url-test
-    use: [pool-a]
-  - name: "POOL | B"
-    type: url-test
-    use: [pool-b]
-  - name: "POOL | C"
-    type: url-test
-    use: [pool-c]
-
+# PROXY offers EXIT | Endpoint A | RELAY and Endpoint A | VLESS | DIRECT.
+# Endpoint B has multiple protocols, so both paths get automatic EXIT groups.
+# RELAY | Endpoint A and RELAY | Endpoint B select their intermediate pool.
+# POOL | pool-a, POOL | pool-b, and POOL | pool-c also appear in PROXY as exits.
 # Shared pools share their selected node across every reference.
-# DIRECT exit groups connect to the exit server without an intermediate.
+# DIRECT paths connect to the exit server without an intermediate.
 # Relays must support the exit transport, including UDP for Hysteria2.
 # Avoid include-all in relay groups: including exits can create a cycle.
 # QX relay conversion is pending. Publishing updates both Mihomo subscriptions;

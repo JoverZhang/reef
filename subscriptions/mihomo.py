@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from subscriptions.upstream import fetch_nodes, validate_nodes
 
 
-INPUT_KEYS = {"proxies", "proxy-providers", "proxy-groups"}
+INPUT_KEYS = {"proxies", "proxy-providers", "proxy-groups", "relay"}
 PROBE_URL = "https://www.gstatic.com/generate_204"
 
 
@@ -131,6 +131,31 @@ def validate_input(values: dict[str, Any]) -> None:
             _url(group["url"], f"{label} url")
     if groups and "PROXY" not in names:
         raise ValueError("proxy-groups must define PROXY for the three profile templates")
+    if "relay" in values:
+        relay = values["relay"]
+        if not isinstance(relay, dict) or not relay:
+            raise ValueError("relay must be a nonempty mapping")
+        if groups:
+            raise ValueError("relay cannot be combined with explicit proxy-groups")
+        for index, (name, pools) in enumerate(relay.items(), start=1):
+            label = f"relay exit #{index}"
+            if name not in providers or providers[name]["type"] != "inline":
+                raise ValueError(f"{label} must reference an inline proxy-provider")
+            spec = providers[name]
+            if "dialer-proxy" in spec.get("override", {}) or any(
+                "dialer-proxy" in node for node in spec["payload"]
+            ):
+                raise ValueError(f"{label} must not already define dialer-proxy")
+            if not isinstance(pools, list) or not pools:
+                raise ValueError(f"{label} pools must be a nonempty list")
+            for pool in pools:
+                _name(pool, f"{label} pool")
+                if pool not in providers:
+                    raise ValueError(f"{label} references an unknown pool provider")
+                if pool in relay:
+                    raise ValueError(f"{label} cannot use an exit provider as a pool")
+            if len(set(pools)) != len(pools):
+                raise ValueError(f"{label} contains duplicate pools")
 
 
 def provider_upstreams(spec: dict) -> list[dict]:
@@ -139,7 +164,9 @@ def provider_upstreams(spec: dict) -> list[dict]:
     return spec["upstreams"] if "upstreams" in spec else [{"url": spec["url"]}]
 
 
-def load_providers(specs: dict[str, dict]) -> tuple[list[dict], dict[str, list[str]]]:
+def load_providers(
+    specs: dict[str, dict], relay: dict[str, list[str]] | None = None,
+) -> tuple[list[dict], dict[str, list[str]]]:
     nodes: dict[str, dict] = {}
     members = {}
     cache = {}
@@ -172,6 +199,8 @@ def load_providers(specs: dict[str, dict]) -> tuple[list[dict], dict[str, list[s
                     override.get("additional-prefix", "") + prefix + node["name"]
                     + override.get("additional-suffix", "")
                 )
+                if relay and name in relay:
+                    node["name"] = f"{name} | {node['name']}"
                 if "dialer-proxy" in override:
                     node["dialer-proxy"] = override["dialer-proxy"]
                 if node["name"] in selected and node != selected[node["name"]]:
@@ -186,6 +215,42 @@ def load_providers(specs: dict[str, dict]) -> tuple[list[dict], dict[str, list[s
             nodes.setdefault(node["name"], node)
         members[name] = list(selected)
     return list(nodes.values()), members
+
+
+def relay_groups(
+    nodes: list[dict], providers: dict[str, list[str]], relay: dict[str, list[str]],
+) -> tuple[list[dict], list[dict]]:
+    by_name = {node["name"]: node for node in nodes}
+    exit_names = {name for provider in relay for name in providers[provider]}
+    result = [node for node in nodes if node["name"] not in exit_names]
+    choices = []
+    groups = [{"name": "PROXY", "type": "select", "proxies": choices}]
+    for name, pools in relay.items():
+        relay_name = f"RELAY | {name}"
+        for path in ("RELAY", "DIRECT"):
+            members = []
+            for member in providers[name]:
+                node = copy.deepcopy(by_name[member])
+                node["name"] = f"{member} | {path}"
+                if path == "RELAY":
+                    node["dialer-proxy"] = relay_name
+                result.append(node)
+                members.append(node["name"])
+            if path == "DIRECT" and len(members) == 1:
+                choices.append(members[0])
+            else:
+                group_name = f"EXIT | {name} | {path}"
+                groups.append({"name": group_name, "type": "url-test", "proxies": members})
+                choices.append(group_name)
+        groups.append({"name": relay_name, "type": "select",
+                       "proxies": [f"POOL | {pool}" for pool in pools]})
+    pool_names = {pool for pools in relay.values() for pool in pools}
+    for name in providers:
+        if name in pool_names:
+            group_name = f"POOL | {name}"
+            choices.append(group_name)
+            groups.append({"name": group_name, "type": "url-test", "use": [name]})
+    return result, groups
 
 
 def resolve_groups(

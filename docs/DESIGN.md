@@ -340,7 +340,11 @@ This first version accepts:
   names and `use` for provider names. The native `include-all`,
   `include-all-proxies`, and `include-all-providers` selectors are also accepted.
   Custom groups must contain `PROXY`, which is the existing templates' target.
-  With no custom groups, the existing `PROXY` and `AUTO` defaults remain.
+  With no custom groups or `relay` mapping, the existing `PROXY` and `AUTO`
+  defaults remain.
+- `relay`: an optional mapping from inline exit provider names to ordered lists
+  of intermediate provider names. It generates the exit, relay, and pool groups
+  described below. It cannot be combined with nonempty `proxy-groups`.
 
 For example, each collection explicitly lists its upstream subscriptions:
 
@@ -406,43 +410,66 @@ This follows [Mihomo's native dialer-proxy semantics](https://wiki.metacubex.one
 and relayed paths. Public examples use independent placeholder names, addresses,
 and credentials; they must not disclose private operator names or locations.
 
-Use `proxy-providers` for filtered subscription collections or inline nodes,
-one `RELAY | <exit>` group per exit for intermediate selection, and `PROXY` for
-exit selection. Each exit has two automatic protocol groups:
-`EXIT | <exit> | DIRECT` and `EXIT | <exit> | RELAY`. Direct paths connect
-to the exit server without an intermediate; they still use that server as their
-public exit. Each path uses distinct node names and probe history. Inline
-collections can share an anchored endpoint payload and use
-`override.additional-suffix` to distinguish the two paths. Only the relay
-collection adds `override.dialer-proxy`; the shared payload must not contain it.
-These names have no implicit chaining behavior: only the native
-`dialer-proxy` field creates the connection. Inline and HTTP exit collections can
-also use `override.dialer-proxy` to share one defined relay group. The generator applies overrides to the filtered
-snapshot and preserves the resulting `dialer-proxy` fields in both Mihomo outputs.
+Use `proxy-providers` for filtered subscription collections and inline endpoint
+collections. For automatic groups, each exit is one inline provider whose key is
+the node's display name, such as `Endpoint A`. Its payload contains the ordinary
+protocol endpoints, named for example `Trojan` and `Hysteria2`. The optional
+`relay` mapping specifies only which pools each exit can use:
 
-Chains require explicit `proxy-groups` including `PROXY`. In the supplied example,
-`PROXY` offers the direct and relayed paths for sample exits A and B, plus
-`POOL | A`, `POOL | B`, and `POOL | C`. Pools are ordinary
-`url-test` groups using their matching collections. Selecting a pool in `PROXY`
-uses its selected node as the final exit, without a subsequent owned exit.
-Each relay selector chooses from those same pools and has no direct option.
-Upstream display names and pool names are configurable, including localized
-names in private configuration; public examples use English.
-Do not use `include-all` for these groups: it can create a cycle or offer an
-unintended exit. A relay can be a concrete node, a manual group, or a `url-test`
-group. Automatic tests of intermediate nodes measure their own connections,
-not every possible intermediate/exit combination. Both node and group references
-are checked together for missing targets and cycles, including candidates that
-are not selected initially. There is no implicit direct fallback.
+```yaml
+relay:
+  Endpoint A: [pool-a, pool-b, pool-c]
+  Endpoint B: [pool-c, pool-a, pool-b]
+```
 
-When different exits need different intermediates, give each exit its own
-`dialer-proxy` group, such as `RELAY | A` and `RELAY | B`,
-instead of sharing the provider override. Each group keeps its own manual choice, so switching
-`PROXY` also switches to the corresponding intermediate without resetting it.
-The automatic groups remain visible so a client can pin a particular member.
-All references to the same pool share its current node, whether the pool is
-used as an exit or as an intermediate. `POOL | C` keeps its own selection
-across its explicitly combined membership.
+There is no separate group display name or region alias. All referenced providers
+must exist. The mapping and each pool list must be nonempty; repeated pools and
+using an exit provider as a pool are rejected. Exit providers must be inline and
+must not already set `dialer-proxy` in their payload or override. Pools can use
+inline or HTTP providers. Rename the provider key and its reference together;
+the generated names follow automatically.
+
+For each exit, Reef prefixes filtered endpoint names with `<provider name> | `,
+then makes separate ` | DIRECT` and ` | RELAY` copies. DIRECT copies have no
+`dialer-proxy`; RELAY copies point to `RELAY | <provider name>`. This keeps protocol
+selection and probe history independent for the two paths. The generated groups
+are:
+
+- `PROXY`: each exit's RELAY option followed by its DIRECT option, in mapping
+  order, then the referenced pools in provider declaration order.
+- `EXIT | <provider name> | RELAY`: an automatic `url-test` group of relayed
+  endpoints, including when there is only one endpoint.
+- `EXIT | <provider name> | DIRECT`: an automatic `url-test` group only when the
+  filtered collection has multiple endpoints. With one endpoint, `PROXY`
+  references the DIRECT node itself, without an extra group. Empty collections
+  fail. This decision is recalculated on every generation.
+- `RELAY | <provider name>`: a `select` group of that exit's pools in the supplied
+  order. The first pool is the default; there is no DIRECT option.
+- `POOL | <provider name>`: one shared `url-test` group for each referenced pool.
+  Selecting it in `PROXY` uses its node as the final exit, without an owned exit.
+
+These automatic groups use the existing probe defaults. Pool and endpoint names
+may be localized in private configuration; public examples use English.
+DIRECT exit paths still use the exit server as their public exit. They are
+unrelated to Mihomo's built-in `DIRECT`, which bypasses proxying entirely.
+
+Without `relay`, explicit native `proxy-groups` including `PROXY` remain supported
+for manually defined chains. Only the native `dialer-proxy` field creates the
+connection; group names alone have no chaining behavior. Inline and HTTP providers
+can use `override.dialer-proxy` to share a defined relay group. The generator
+preserves the resulting fields in both Mihomo outputs. Do not use `include-all`
+for relay selectors: it can create a cycle or offer an unintended exit. A manual
+relay can be a concrete node, a manual group, or a `url-test` group. Both node and
+group references are checked together for missing targets and cycles, including
+candidates that are not selected initially. There is no implicit direct fallback.
+
+Each generated relay selector keeps its own manual choice, so switching `PROXY`
+also switches to the corresponding intermediate without resetting it. Automatic
+groups remain visible so a client can pin a particular member. All references to
+the same pool share its current node, whether used as an exit or as an
+intermediate. Combined pools keep their own selection across their explicitly
+listed subscriptions. Automatic pool tests measure the intermediate's own
+connection, not every possible intermediate/exit combination.
 
 The fictional endpoints demonstrate VLESS Reality, Trojan, and Hysteria2.
 Protocol selection is independent for direct and relayed paths. Hysteria2 exits
