@@ -15,11 +15,19 @@ from unittest.mock import patch
 import yaml
 
 from reef import core
-from reef.cli import reef_web_env, render, smoke, urls
-from subscriptions import upstream
+from reef.cli import config_yaml, render, smoke, urls
+from subscriptions import extension, upstream
 
 
 SECRET = "12" * 32
+VLESS = {**next(
+    proxy for proxy in yaml.safe_load(
+        (Path(__file__).parent / "fixtures" / "upstream.yaml").read_text()
+    )["proxies"] if proxy["type"] == "vless"
+), "skip-cert-verify": False}
+EXTENSION = yaml.safe_load(
+    (Path(__file__).parent / "fixtures" / "extension.yaml").read_text()
+)["nodes"][0]
 
 
 class SubscriptionOnlyTests(unittest.TestCase):
@@ -29,15 +37,15 @@ class SubscriptionOnlyTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         project_path = core.project_path
         self.addCleanup(patch.stopall)
-        patch.object(
-            core,
-            "project_path",
-            side_effect=lambda *parts: (
+
+        def isolated_path(*parts):
+            return (
                 self.root.joinpath(*parts)
-                if parts[0] in {"build", "web"}
+                if parts[0] in {"build", "web"} or parts == ("config.yaml",)
                 else project_path(*parts)
-            ),
-        ).start()
+            )
+
+        patch.object(core, "project_path", side_effect=isolated_path).start()
         patch.dict(os.environ, {}, clear=True).start()
         self.proxies = [
             {
@@ -82,15 +90,23 @@ class SubscriptionOnlyTests(unittest.TestCase):
         self.thread.start()
         self.addCleanup(self.stop_server)
         self.url = f"http://127.0.0.1:{self.server.server_port}/private-test-subscription"
-        self.values = {"REEF_SECRET": SECRET, "REEF_UPSTREAM_URL": self.url}
+        self.values = {"secret": SECRET, "subscriptions": {"upstream_urls": [self.url]}}
 
     def stop_server(self) -> None:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
 
-    def model(self, **extra: str) -> core.Model:
-        return core.build_model(core.parse_config({**self.values, **extra}))
+    def model(self, *, cluster=None, upstream_urls=None, nodes=None) -> core.Model:
+        values = {
+            **self.values,
+            "cluster": cluster or {},
+            "subscriptions": {
+                "upstream_urls": [self.url] if upstream_urls is None else upstream_urls,
+                "nodes": nodes or [],
+            },
+        }
+        return core.build_model(core.parse_config(values))
 
     def generate(self, model: core.Model | None = None) -> list[dict[str, str]]:
         with contextlib.redirect_stderr(io.StringIO()):
@@ -108,25 +124,25 @@ class SubscriptionOnlyTests(unittest.TestCase):
         self.assertEqual(model.nodes, [])
         self.assertEqual(model.routes, [])
         self.assertEqual(model.secrets, {})
-        self.assertIsNone(model.config.ssh_private_key_b64)
+        self.assertIsNone(model.config.ssh_private_key)
 
     def test_config_requires_an_upstream_or_a_complete_cluster(self) -> None:
         for values in (
-            {"REEF_SECRET": SECRET},
-            {"REEF_SECRET": SECRET, "REEF_UPSTREAM_URL": " "},
-            {**self.values, "REEF_ENTRY_1": "sg,192.0.2.1"},
+            {"secret": SECRET},
+            {"secret": SECRET, "subscriptions": {"upstream_urls": [], "nodes": []}},
+            {**self.values, "cluster": {"entries": [{"name": "sg", "ip": "192.0.2.1"}]}},
         ):
-            with self.subTest(values=list(values)), self.assertRaisesRegex(ValueError, "REEF_EXIT_N"):
+            with self.subTest(values=list(values)), self.assertRaisesRegex(ValueError, "cluster.exits"):
                 core.parse_config(values)
-        with self.assertRaisesRegex(ValueError, "requires at least one REEF_ENTRY_N"):
-            self.model(REEF_ENTRY_OVERRIDE_BASE_DOMAIN="example.com")
-        with self.assertRaisesRegex(ValueError, "REEF_SECRET"):
-            core.parse_config({"REEF_UPSTREAM_URL": self.url})
+        with self.assertRaisesRegex(ValueError, "requires at least one entry"):
+            self.model(cluster={"entry_override_base_domain": "example.com"})
+        with self.assertRaisesRegex(ValueError, "secret"):
+            core.parse_config({"subscriptions": {"upstream_urls": [self.url]}})
 
     def test_invalid_upstream_urls_are_rejected_without_echoing_them(self) -> None:
         for url in ("file:///private", "https://host:bad/private", "https://host:99999/private"):
-            with self.subTest(url=url), self.assertRaisesRegex(ValueError, "HTTP\\(S\\)") as error:
-                core.parse_config({**self.values, "REEF_UPSTREAM_URL": url})
+            with self.subTest(url=url), self.assertRaisesRegex(ValueError, r"HTTP\(S\)") as error:
+                self.model(upstream_urls=[url])
             self.assertNotIn(url, str(error.exception))
 
     def test_upstream_only_keeps_templates_and_three_profiles(self) -> None:
@@ -158,7 +174,7 @@ class SubscriptionOnlyTests(unittest.TestCase):
         self.assertFalse((self.root / "build/ssh").exists())
 
     def test_mixed_mode_appends_upstream_and_keeps_smoke_metadata_local(self) -> None:
-        model = self.model(REEF_ENTRY_1="sg,192.0.2.1", REEF_EXIT_1="us,192.0.2.2")
+        model = self.model(cluster={"entries": [{"name": "sg", "ip": "192.0.2.1"}], "exits": [{"name": "us", "ip": "192.0.2.2"}]})
         profiles = self.generate(model)
         for profile in profiles[:2]:
             doc = yaml.safe_load(profile["body"])
@@ -179,7 +195,7 @@ class SubscriptionOnlyTests(unittest.TestCase):
         self.assertTrue(all(a["body"] != b["body"] for a, b in zip(first, second, strict=True)))
 
     def test_removing_cluster_preserves_all_three_subscription_urls(self) -> None:
-        mixed = self.generate(self.model(REEF_ENTRY_1="sg,192.0.2.1", REEF_EXIT_1="us,192.0.2.2"))
+        mixed = self.generate(self.model(cluster={"entries": [{"name": "sg", "ip": "192.0.2.1"}], "exits": [{"name": "us", "ip": "192.0.2.2"}]}))
         upstream_only = self.generate()
         self.assertEqual(
             [(p["id"], p["token"]) for p in mixed],
@@ -187,7 +203,7 @@ class SubscriptionOnlyTests(unittest.TestCase):
         )
         generated = (self.root / "web/generated/subscriptions.ts").read_text()
         self.assertTrue(generated.startswith("import 'server-only';"))
-        for value in (SECRET, self.url, "REEF_SSH_PRIVATE_KEY_B64"):
+        for value in (SECRET, self.url, "ssh_private_key"):
             self.assertNotIn(value, generated)
 
     def test_invalid_or_qx_incompatible_upstream_preserves_existing_artifacts(self) -> None:
@@ -239,25 +255,176 @@ class SubscriptionOnlyTests(unittest.TestCase):
         self.assertEqual(output.getvalue().count("<hidden in CI>"), 3)
         self.assertNotIn("private-test-subscription", output.getvalue())
 
-    def test_web_env_exports_subscription_only_config_without_fetching(self) -> None:
+    def test_config_yaml_exports_subscription_only_config_without_fetching(self) -> None:
+        core.write_config({**self.values, "ssh_private_key": "deployment-only-test-key"})
+        before = (self.root / "config.yaml").read_bytes()
         output = io.StringIO()
-        with (
-            patch.object(reef_web_env, "load_env", return_value={
-                **self.values, "REEF_SSH_PRIVATE_KEY_B64": "deployment-only-test-key",
-                "REEF_TEST_MODE": "1", "TEST_HOST_MAP": "test-only-path",
-            }),
-            contextlib.redirect_stdout(output),
-        ):
-            self.assertEqual(reef_web_env.main(), 0)
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(config_yaml.main(), 0)
         payload = output.getvalue()
-        self.assertIn(f"={self.url}\n", payload)
-        self.assertNotIn("REEF_EXIT_1", payload)
-        self.assertNotIn("REEF_ENTRY_1", payload)
         self.assertNotIn("deployment-only", payload)
-        self.assertNotIn("TEST_", payload)
-        env_path = self.root / "website.env"
-        env_path.write_text(payload)
-        self.assertEqual(core.parse_config(core.load_env(env_path)), core.parse_config(self.values))
+        self.assertNotIn("ssh_private_key", payload)
+        self.assertEqual(core.parse_config_yaml(payload), self.values)
+        self.assertEqual((self.root / "config.yaml").read_bytes(), before)
+        self.assertEqual(self.requests, 0)
+
+    def test_extension_only_generates_all_profiles_without_fetching(self) -> None:
+        values = {"secret": SECRET, "subscriptions": {"nodes": [EXTENSION]}}
+        core.write_config(values)
+        model = core.load_model()
+        profiles = self.generate(model)
+        self.assertEqual(self.requests, 0)
+        self.assertEqual(model.nodes, [])
+        self.assertEqual(model.routes, [])
+        self.assertEqual(model.secrets, {})
+        for profile in profiles[:2]:
+            document = yaml.safe_load(profile["body"])
+            self.assertEqual(document["proxies"], [VLESS])
+            self.assertEqual(document["proxy-groups"][0]["proxies"], ["AUTO", VLESS["name"]])
+            self.assertEqual(document["proxy-groups"][1]["proxies"], [VLESS["name"]])
+        self.assertIn(f"tag={VLESS['name']}", profiles[2]["body"])
+        for option in (
+            f"password={EXTENSION['uuid']}", "obfs=over-tls", "tls-verification=true",
+            "obfs-host=reality.example.test", "reality-base64-pubkey=" + "A" * 43,
+            "udp-relay=true",
+        ):
+            self.assertIn(option, profiles[2]["body"])
+        self.assertTrue((self.root / "web/generated/subscriptions.ts").exists())
+        with self.assertRaisesRegex(ValueError, "deployment recipes require a Reef cluster"):
+            core.parse_config(values, require_ssh=True)
+
+    def test_extension_grpc_is_appended_to_mihomo_and_skipped_in_qx(self) -> None:
+        node = {
+            **EXTENSION, "transport": {"type": "grpc", "service_name": "test-service"},
+            "packet_encoding": "xudp", "encryption": "none",
+        }
+        grpc = {
+            **VLESS, "network": "grpc", "grpc-opts": {"grpc-service-name": "test-service"},
+            "packet-encoding": "xudp",
+        }
+        model = self.model(
+            cluster={"entries": [{"name": "sg", "ip": "192.0.2.1"}], "exits": [{"name": "us", "ip": "192.0.2.2"}]},
+            nodes=[node],
+        )
+        profiles = self.generate(model)
+        self.assertEqual(self.requests, 1)
+        for profile in profiles[:2]:
+            document = yaml.safe_load(profile["body"])
+            self.assertEqual(document["proxies"][-3:], self.proxies + [grpc])
+            self.assertEqual(len(document["proxies"]), 7)
+            for group in document["proxy-groups"]:
+                self.assertIn(grpc["name"], group["proxies"])
+        self.assertNotIn(grpc["name"], profiles[2]["body"])
+        self.assertIn(self.proxies[0]["name"], profiles[2]["body"])
+
+        self.payload = yaml.safe_dump({"proxies": [grpc]}).encode()
+        previous = self.artifacts()
+        with self.assertRaisesRegex(ValueError, "duplicate name"):
+            self.generate(model)
+        self.assertEqual(self.artifacts(), previous)
+
+    def test_common_vless_transports_and_tls_generate_both_clients(self) -> None:
+        plain = {key: value for key, value in EXTENSION.items() if key not in {"tls", "transport"}}
+        nodes = [
+            {**plain, "name": "plain"},
+            {**plain, "name": "ws", "transport": {"type": "ws", "path": "/socket", "host": "ws.example.test"}},
+            {**plain, "name": "wss", "transport": {"type": "ws", "path": "/socket"}, "tls": {"sni": "wss.example.test"}},
+            {**plain, "name": "wss-host", "transport": {
+                "type": "ws", "host": "ws.example.test",
+            }, "tls": {"sni": "ws.example.test"}},
+            {**EXTENSION, "name": "vision", "flow": "xtls-rprx-vision", "tls": {
+                **EXTENSION["tls"],
+                "reality": {**EXTENSION["tls"]["reality"], "short_id": "0123456789abcdef"},
+            }},
+            {**plain, "name": "tls-defaults", "tls": {}, "udp": False},
+            {**plain, "name": "tls-alpn", "tls": {"alpn": ["h2", "http/1.1"], "verify": False}},
+        ]
+        profiles = self.generate(self.model(
+            upstream_urls=[], nodes=nodes,
+        ))
+        by_name = {node["name"]: node for node in yaml.safe_load(profiles[0]["body"])["proxies"]}
+        self.assertFalse(by_name["plain"]["tls"])
+        self.assertEqual(by_name["plain"]["network"], "tcp")
+        self.assertEqual(by_name["ws"]["ws-opts"], {"path": "/socket", "headers": {"Host": "ws.example.test"}})
+        self.assertEqual(by_name["wss"]["servername"], "wss.example.test")
+        self.assertEqual(by_name["wss"]["ws-opts"]["headers"], {"Host": "wss.example.test"})
+        self.assertEqual(by_name["vision"]["reality-opts"]["short-id"], "0123456789abcdef")
+        self.assertEqual(by_name["tls-defaults"]["servername"], EXTENSION["server"])
+        qx_lines = {
+            next(part.removeprefix("tag=") for part in line.split(", ") if part.startswith("tag=")): line
+            for line in profiles[2]["body"].splitlines() if line.startswith("vless=")
+        }
+        self.assertEqual(set(qx_lines), set(by_name))
+        self.assertNotIn("obfs=", qx_lines["plain"])
+        for name, obfs, host in (
+            ("ws", "ws", "ws.example.test"),
+            ("wss", "wss", "wss.example.test"),
+            ("wss-host", "wss", "ws.example.test"),
+        ):
+            self.assertIn(f"obfs={obfs},", qx_lines[name])
+            self.assertIn(f"obfs-host={host}", qx_lines[name])
+            self.assertEqual(qx_lines[name].count("obfs-host="), 1)
+            self.assertNotIn("tls-host=", qx_lines[name])
+        self.assertIn("obfs-uri=/socket", qx_lines["wss"])
+        self.assertIn("obfs-uri=/", qx_lines["wss-host"])
+        for option in (
+            "vless-flow=xtls-rprx-vision", "reality-hex-shortid=0123456789abcdef",
+        ):
+            self.assertIn(option, qx_lines["vision"])
+        self.assertIn("tls-verification=true", qx_lines["tls-defaults"])
+        self.assertIn("udp-relay=false", qx_lines["tls-defaults"])
+        self.assertIn("tls-alpn=02683208687474702f312e31", qx_lines["tls-alpn"])
+        self.assertIn("tls-verification=false", qx_lines["tls-alpn"])
+
+    def test_qx_incompatible_extension_options_are_never_silently_changed(self) -> None:
+        nodes = [
+            {**EXTENSION, "name": "grpc", "transport": {"type": "grpc", "service_name": "service"}},
+            {**EXTENSION, "name": "split-host", "transport": {
+                "type": "ws", "host": "different.example.test",
+            }, "tls": {"sni": "certificate.example.test"}},
+            {**EXTENSION, "name": "xudp", "packet_encoding": "xudp"},
+            {**EXTENSION, "name": "encryption", "encryption": "test-vless-encryption"},
+        ]
+        proxies = extension.parse_extend_nodes(nodes)
+        profiles = self.generate(self.model(nodes=nodes))
+        for profile in profiles[:2]:
+            self.assertEqual(yaml.safe_load(profile["body"])["proxies"][-len(proxies):], proxies)
+        for node in nodes:
+            self.assertNotIn(f"tag={node['name']}", profiles[2]["body"])
+        before = self.artifacts()
+        with self.assertRaisesRegex(ValueError, "Quantumult X"):
+            self.generate(self.model(upstream_urls=[], nodes=nodes))
+        self.assertEqual(self.artifacts(), before)
+
+    def test_invalid_extension_nodes_do_not_echo_credentials(self) -> None:
+        for nodes in (
+            None,
+            {"proxies": [VLESS]},
+            ["private-credential"],
+            [{**EXTENSION, "port": 0}],
+            [EXTENSION, EXTENSION],
+            [{**EXTENSION, "uuid": "private-credential"}],
+            [{**EXTENSION, "tls": True}],
+            [{**EXTENSION, "transport": {"type": "ws"}}],
+            [{**EXTENSION, "tls": {**EXTENSION["tls"], "alpn": ["h2"]}}],
+            [{**EXTENSION, "udp": "true"}],
+            [{**EXTENSION, "dialer-proxy": "private-credential"}],
+            [{**EXTENSION, "transport": {"type": "tcp", "service_name": "private-credential"}}],
+            [{**EXTENSION, "tls": {"reality": {"public_key": "A" * 43, "short_id": 123456}}}],
+        ):
+            with self.assertRaises(ValueError) as error:
+                extension.parse_extend_nodes(nodes)
+            self.assertNotIn("private-credential", str(error.exception))
+
+    def test_extension_only_export_includes_nodes_without_fetching(self) -> None:
+        values = {"secret": SECRET, "subscriptions": {"nodes": [EXTENSION]}}
+        core.write_config(values)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(config_yaml.main(), 0)
+        exported = core.parse_config_yaml(output.getvalue())
+        self.assertEqual(exported, values)
+        self.assertEqual(core.parse_config(exported), core.parse_config(values))
         self.assertEqual(self.requests, 0)
 
     def test_deployment_and_smoke_require_a_cluster(self) -> None:

@@ -21,16 +21,19 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.x509.oid import NameOID
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from subscriptions.upstream import load_nodes as load_upstream_nodes, quantumult_x_nodes
+from subscriptions.extension import parse_extend_nodes
+from subscriptions.upstream import (
+    load_nodes as load_upstream_nodes,
+    quantumult_x_nodes,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE_DIR = "/opt/reef"
 SECRET_RE = re.compile(r"^[0-9a-f]{64}$")
-NODE_RE = re.compile(r"^REEF_(ENTRY|EXIT)_(\d+)$")
 ENTRY_OVERRIDE_ADDRESS = "127.0.0.1"
 # NIST P-256 group order. cryptography exposes SECP256R1(), but not the scalar
-# field order needed to derive a deterministic private key from REEF_SECRET.
+# field order needed to derive a deterministic private key from the root seed.
 P256_ORDER = int("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)
 
 
@@ -68,10 +71,11 @@ class Config:
     exits: list[Node]
     entry_port_base: int
     exit_port: int
-    ssh_private_key_b64: str | None
+    ssh_private_key: str | None
     smoke_url: str
     entry_override_base_domain: str | None
     upstream_urls: list[str]
+    extend_proxies: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -114,68 +118,101 @@ def _require_test_mode(name: str) -> None:
         raise ValueError(f"{name} is only allowed when REEF_TEST_MODE=1")
 
 
-def load_env(path: Path | None = None) -> dict[str, str]:
-    env_path = path or Path(os.environ.get("REEF_ENV_FILE", ".env"))
-    values: dict[str, str] = {}
-    if env_path.exists():
-        for line_no, raw in enumerate(env_path.read_text().splitlines(), start=1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                raise ValueError(f"{env_path}:{line_no}: expected KEY=VALUE")
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip()
-            if (
-                len(value) >= 2
-                and value[0] == value[-1]
-                and value[0] in {"'", '"'}
-            ):
-                value = value[1:-1]
-            values[key] = value
-
-    for key, value in os.environ.items():
-        if key.startswith("REEF_") or key in {"CI"}:
-            values[key] = value
-    return values
+class _ConfigLoader(yaml.SafeLoader):
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        result = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, str) or key in result:
+                raise ValueError("config.yaml keys must be unique strings")
+            result[key] = self.construct_object(value_node, deep=deep)
+        return result
 
 
-def parse_config(values: dict[str, str], *, require_ssh: bool = False) -> Config:
-    secret = values.get("REEF_SECRET", "")
-    if not SECRET_RE.match(secret):
-        raise ValueError("REEF_SECRET must be exactly 64 lowercase hex characters")
+class _ConfigDumper(yaml.SafeDumper):
+    pass
 
-    entries = _parse_nodes(values, "ENTRY")
-    exits = _parse_nodes(values, "EXIT")
-    upstream_urls = _parse_upstream_urls(values)
-    if not exits and (entries or not upstream_urls):
-        raise ValueError("at least one REEF_EXIT_N is required unless using only upstream URLs")
+
+def _config_string(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style="|" if "\n" in value else None)
+
+
+_ConfigDumper.add_representer(str, _config_string)
+
+
+def config_path() -> Path:
+    return _env_path("TEST_CONFIG_FILE") or project_path("config.yaml")
+
+
+def parse_config_yaml(content: str | bytes) -> dict[str, Any]:
+    try:
+        document = yaml.load(content, Loader=_ConfigLoader)
+    except (yaml.YAMLError, UnicodeError):
+        raise ValueError("config.yaml must be valid YAML") from None
+    return _config_mapping(document, {"secret", "ssh_private_key", "cluster", "subscriptions"}, "config.yaml")
+
+
+def load_config(path: Path | None = None) -> dict[str, Any]:
+    try:
+        content = (path or config_path()).read_bytes()
+    except OSError:
+        raise ValueError("config.yaml could not be read") from None
+    return parse_config_yaml(content)
+
+
+def dump_config(document: dict[str, Any]) -> str:
+    return yaml.dump(document, Dumper=_ConfigDumper, sort_keys=False, allow_unicode=True)
+
+
+def write_config(document: dict[str, Any], path: Path | None = None) -> None:
+    content = dump_config(document)
+    fd = os.open(path or config_path(), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as output:
+        os.fchmod(output.fileno(), 0o600)
+        output.write(content)
+
+
+def _config_mapping(value: Any, fields: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) - fields:
+        raise ValueError(f"{label} must be a mapping containing only documented fields")
+    return value
+
+
+def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config:
+    values = _config_mapping(values, {"secret", "ssh_private_key", "cluster", "subscriptions"}, "config.yaml")
+    secret = values.get("secret")
+    if not isinstance(secret, str) or not SECRET_RE.fullmatch(secret):
+        raise ValueError("secret must be a string of exactly 64 lowercase hex characters")
+    cluster = _config_mapping(values.get("cluster", {}), {
+        "entries", "exits", "entry_port_base", "exit_port", "entry_override_base_domain",
+    }, "cluster")
+    subscriptions = _config_mapping(values.get("subscriptions", {}), {"upstream_urls", "nodes"}, "subscriptions")
+    entries = _parse_nodes(cluster.get("entries", []), "entry")
+    exits = _parse_nodes(cluster.get("exits", []), "exit")
+    upstream_urls = _parse_upstream_urls(subscriptions.get("upstream_urls", []))
+    extend_proxies = parse_extend_nodes(subscriptions.get("nodes", []))
+    if not exits and (entries or not (upstream_urls or extend_proxies)):
+        raise ValueError("cluster.exits requires at least one node unless using standalone subscriptions")
     if require_ssh and not exits:
-        raise ValueError("deployment recipes require a Reef cluster with at least one REEF_EXIT_N")
+        raise ValueError("deployment recipes require a Reef cluster with at least one node in cluster.exits")
 
     names = [n.id for n in [*entries, *exits]]
-    duplicates = sorted({name for name in names if names.count(name) > 1})
-    if duplicates:
-        raise ValueError(f"duplicate node name(s): {', '.join(duplicates)}")
+    if len(set(names)) != len(names):
+        raise ValueError("cluster node names must be unique")
 
-    entry_port_base = _parse_port(
-        values.get("REEF_ENTRY_PORT_BASE", "20000"),
-        "REEF_ENTRY_PORT_BASE",
-    )
-    exit_port = _parse_port(values.get("REEF_EXIT_PORT", "443"), "REEF_EXIT_PORT")
-    ssh_key = values.get("REEF_SSH_PRIVATE_KEY_B64")
+    entry_port_base = _parse_port(cluster.get("entry_port_base", 20000), "cluster.entry_port_base")
+    exit_port = _parse_port(cluster.get("exit_port", 443), "cluster.exit_port")
+    ssh_key = values.get("ssh_private_key")
+    if "ssh_private_key" in values:
+        validate_ssh_private_key(ssh_key)
     if require_ssh and not ssh_key:
-        raise ValueError("REEF_SSH_PRIVATE_KEY_B64 is required for deployment recipes")
-    if ssh_key:
-        _decode_private_key(ssh_key)
+        raise ValueError("ssh_private_key is required for deployment recipes")
 
     entry_override_base_domain = _parse_optional_domain(
-        values.get("REEF_ENTRY_OVERRIDE_BASE_DOMAIN", ""),
-        "REEF_ENTRY_OVERRIDE_BASE_DOMAIN",
+        cluster.get("entry_override_base_domain", ""), "cluster.entry_override_base_domain",
     )
     if entry_override_base_domain and not entries:
-        raise ValueError("REEF_ENTRY_OVERRIDE_BASE_DOMAIN requires at least one REEF_ENTRY_N")
+        raise ValueError("cluster.entry_override_base_domain requires at least one entry")
 
     return Config(
         secret_hex=secret,
@@ -183,25 +220,20 @@ def parse_config(values: dict[str, str], *, require_ssh: bool = False) -> Config
         exits=exits,
         entry_port_base=entry_port_base,
         exit_port=exit_port,
-        ssh_private_key_b64=ssh_key,
+        ssh_private_key=ssh_key,
         smoke_url="https://api.ipify.org",
         entry_override_base_domain=entry_override_base_domain,
         upstream_urls=upstream_urls,
+        extend_proxies=extend_proxies,
     )
 
 
-def _parse_upstream_urls(values: dict[str, str]) -> list[str]:
-    numbered = sorted(
-        (int(match.group(1)), key, value.strip())
-        for key, value in values.items()
-        if (match := re.fullmatch(r"REEF_UPSTREAM_URL_(\d+)", key))
-    )
-    if [index for index, _, _ in numbered] != list(range(1, len(numbered) + 1)):
-        raise ValueError("REEF_UPSTREAM_URL_N must be consecutive from 1")
-    sources = [(key, url) for _, key, url in numbered]
-    if legacy_url := values.get("REEF_UPSTREAM_URL", "").strip():
-        sources.insert(0, ("REEF_UPSTREAM_URL", legacy_url))
-    for name, url in sources:
+def _parse_upstream_urls(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        raise ValueError("subscriptions.upstream_urls must be a list")
+    urls = []
+    for index, value in enumerate(values, start=1):
+        url = value.strip() if isinstance(value, str) else ""
         try:
             parsed_url = urlsplit(url)
             valid_url = (
@@ -212,50 +244,42 @@ def _parse_upstream_urls(values: dict[str, str]) -> list[str]:
         except ValueError:
             valid_url = False
         if not valid_url or any(c.isspace() or ord(c) < 32 for c in url):
-            raise ValueError(f"{name} must be an HTTP(S) subscription URL")
-    return [url for _, url in sources]
+            raise ValueError(f"upstream URL #{index} must be an HTTP(S) subscription URL")
+        urls.append(url)
+    return urls
 
 
-def _parse_nodes(values: dict[str, str], kind: str) -> list[Node]:
-    found: dict[int, str] = {}
-    for key, value in values.items():
-        m = NODE_RE.match(key)
-        if not m or m.group(1) != kind:
-            continue
-        found[int(m.group(2))] = value
-    if not found:
-        return []
-    expected = list(range(1, max(found) + 1))
-    actual = sorted(found)
-    if actual != expected:
-        raise ValueError(f"REEF_{kind}_N must be consecutive from 1; got {actual}")
-
-    role = "entry" if kind == "ENTRY" else "exit"
+def _parse_nodes(values: Any, role: str) -> list[Node]:
+    label = "cluster.entries" if role == "entry" else "cluster.exits"
+    if not isinstance(values, list):
+        raise ValueError(f"{label} must be a list")
     nodes = []
-    for index in expected:
-        raw = found[index]
-        parts = [p.strip() for p in raw.split(",")]
-        if len(parts) != 2 or not parts[0] or not parts[1]:
-            raise ValueError(f"REEF_{kind}_{index} must be name,ip")
-        name, ip = parts
-        if not re.match(r"^[a-z][a-z0-9-]*$", name):
-            raise ValueError(f"node name {name!r} must match [a-z][a-z0-9-]*")
-        ipaddress.ip_address(ip)
+    for index, value in enumerate(values, start=1):
+        node = _config_mapping(value, {"name", "ip"}, f"{label} node {index}")
+        name, ip = node.get("name"), node.get("ip")
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", name):
+            raise ValueError(f"{label} node {index} name must match [a-z][a-z0-9-]*")
+        try:
+            if not isinstance(ip, str):
+                raise ValueError
+            ipaddress.ip_address(ip)
+        except ValueError:
+            raise ValueError(f"{label} node {index} must have a valid IP address") from None
         nodes.append(Node(id=name, ip=ip, index=index, role=role))
     return nodes
 
 
-def _parse_port(value: str, name: str) -> int:
-    try:
-        port = int(value)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-    if not 1 <= port <= 65535:
+def _parse_port(value: Any, name: str) -> int:
+    if type(value) is not int:
+        raise ValueError(f"{name} must be an integer")
+    if not 1 <= value <= 65535:
         raise ValueError(f"{name} must be between 1 and 65535")
-    return port
+    return value
 
 
 def _parse_optional_domain(value: str, name: str) -> str | None:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a domain name like example.com")
     domain = value.strip().lower()
     if not domain:
         return None
@@ -275,11 +299,13 @@ def _parse_optional_domain(value: str, name: str) -> str | None:
     return domain
 
 
-def _decode_private_key(value: str) -> bytes:
+def validate_ssh_private_key(value: Any) -> None:
     try:
-        return base64.b64decode(value, validate=True)
-    except Exception as exc:
-        raise ValueError("REEF_SSH_PRIVATE_KEY_B64 must be valid base64") from exc
+        if not isinstance(value, str):
+            raise ValueError
+        serialization.load_ssh_private_key(value.encode(), password=None)
+    except (ValueError, TypeError):
+        raise ValueError("ssh_private_key must be an unencrypted OpenSSH private key") from None
 
 
 def detect_provider_ids() -> list[str]:
@@ -500,9 +526,9 @@ def render_ansible(model: Model, ssh_map_path: Path | None = None) -> None:
     if not known_hosts.exists():
         _write_private(known_hosts, "")
 
-    if model.config.ssh_private_key_b64:
+    if model.config.ssh_private_key:
         key_path = ssh_dir / "reef_id"
-        _write_private(key_path, _decode_private_key(model.config.ssh_private_key_b64))
+        _write_private(key_path, model.config.ssh_private_key)
     else:
         key_path = ssh_dir / "reef_id"
 
@@ -832,7 +858,9 @@ def render_subscriptions(model: Model, host_map_path: Path | None = None) -> lis
     host_map = _load_json_file(host_map_path or _env_path("TEST_HOST_MAP"))
     renderer = load_subscription_renderer()
     context = subscription_context(model, host_map)
-    context["upstream_proxies"] = load_upstream_nodes(model.config.upstream_urls)
+    context["upstream_proxies"] = load_upstream_nodes(
+        model.config.upstream_urls, model.config.extend_proxies
+    )
     context["qx_upstream"] = quantumult_x_nodes(context["upstream_proxies"])
     rendered = renderer.render(context)
     if hasattr(renderer, "validate"):
@@ -950,8 +978,7 @@ def render_web(model: Model) -> list[dict[str, str]]:
 
 
 def load_model(*, require_ssh: bool = False) -> Model:
-    values = load_env()
-    return build_model(parse_config(values, require_ssh=require_ssh))
+    return build_model(parse_config(load_config(), require_ssh=require_ssh))
 
 
 def _route_dict(

@@ -1,0 +1,14 @@
+# Synthetic node in Reef's client-independent format.
+nodes:
+  - name: Reality
+    protocol: vless
+    server: 192.0.2.30
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000001
+    transport:
+      type: tcp
+    tls:
+      sni: reality.example.test
+      client_fingerprint: chrome
+      reality:
+        public_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA

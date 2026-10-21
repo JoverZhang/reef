@@ -1,6 +1,7 @@
 .env
 .env.*
-!.env.example
+subscriptions/extend.yaml
+config.yaml
 tmp/
 .tmp/
 

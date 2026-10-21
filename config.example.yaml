@@ -1,0 +1,45 @@
+# Private local configuration: config.yaml (git-ignored).
+# Start with `just gen-secret`, then add the sections you need below.
+# Replace this placeholder if you copy the example instead.
+secret: "replace_with_64_lowercase_hex_chars"
+
+# Optional for deployment: `just set-ssh-key ~/.ssh/id_ed25519` writes the key
+# as multiline ssh_private_key text. `just config-yaml` excludes it from CI output.
+
+# Optional for subscription-only use: omit cluster if you only use subscriptions.
+cluster:
+  entry_port_base: 20000
+  exit_port: 443
+  entry_override_base_domain: example.com
+  entries:
+    - {name: sg, ip: 192.0.2.10}
+    - {name: jp, ip: 192.0.2.11}
+  exits:
+    - {name: us, ip: 192.0.2.20}
+    - {name: uk, ip: 192.0.2.21}
+
+subscriptions:
+  # HTTP(S) Clash/Mihomo subscriptions, fetched in list order.
+  # Failed sources stop generation and report their 1-based URL number.
+  upstream_urls: []
+  #  - "https://subscription.example.com/private-clash-url"
+  #  - "https://another.example.com/private-clash-url"
+
+  # Standalone nodes in Reef's common format; see docs/DESIGN.md for all fields.
+  nodes: []
+  #  - name: extra-vless
+  #    protocol: vless
+  #    server: proxy.example.com
+  #    port: 443
+  #    uuid: 00000000-0000-4000-8000-000000000001
+  #    transport: {type: tcp}
+  #    tls:
+  #      sni: certificate.example.com
+  #      verify: true
+  #      client_fingerprint: chrome
+  #      reality:
+  #        public_key: "replace_with_server_reality_public_key"
+  #        short_id: ""
+  #    flow: xtls-rprx-vision
+
+# CI: `just config-yaml` prints the payload for the CONFIG_YAML GitHub Secret.

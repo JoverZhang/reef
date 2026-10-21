@@ -1,37 +1,31 @@
 from __future__ import annotations
 
 import argparse
-import base64
+import sys
 from pathlib import Path
 
-
-def upsert_env(path: Path, key: str, value: str) -> None:
-    lines = path.read_text().splitlines() if path.exists() else []
-    out: list[str] = []
-    found = False
-    for line in lines:
-        if line.startswith(f"{key}="):
-            out.append(f"{key}={value}")
-            found = True
-        else:
-            out.append(line)
-    if not found:
-        out.append(f"{key}={value}")
-    path.write_text("\n".join(out).rstrip() + "\n")
-    path.chmod(0o600)
+from reef.core import config_path, load_config, validate_ssh_private_key, write_config
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env", default=".env")
     parser.add_argument("key_path")
     args = parser.parse_args()
-    raw = Path(args.key_path).read_bytes()
-    if b"PRIVATE KEY" not in raw:
-        raise SystemExit(f"{args.key_path} does not look like an OpenSSH private key")
-    encoded = base64.b64encode(raw).decode()
-    upsert_env(Path(args.env), "REEF_SSH_PRIVATE_KEY_B64", encoded)
-    print(f"wrote REEF_SSH_PRIVATE_KEY_B64 to {args.env}")
+    try:
+        key = Path(args.key_path).read_text()
+        validate_ssh_private_key(key)
+        path = config_path()
+        document = load_config(path) if path.exists() else {}
+        document["ssh_private_key"] = key
+        write_config(document, path)
+    except UnicodeError:
+        print("set-ssh-key: key must be UTF-8 OpenSSH text", file=sys.stderr)
+        return 1
+    except (ValueError, OSError) as exc:
+        message = str(exc) if isinstance(exc, ValueError) else "could not read the key or write config.yaml"
+        print(f"set-ssh-key: {message}", file=sys.stderr)
+        return 1
+    print("wrote ssh_private_key to config.yaml")
     return 0
 
 

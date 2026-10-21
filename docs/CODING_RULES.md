@@ -30,8 +30,8 @@ DRY is not the goal by itself. Avoid duplicated meaning, not harmless repeated s
 - Do not hardcode subscription bodies in Next.js route files.
 - Generated files go under `build/` or `web/generated/`.
 - Secrets never go into git.
-- `.env` is local state and must not be committed.
-- `REEF_SECRET` is the root seed. Do not reuse it directly as a password, URL token, or SSH key.
+- `config.yaml` is local state and must not be committed.
+- `secret` in `config.yaml` is the root seed. Do not reuse it directly as a password, URL token, or SSH key.
 - CI logs must not print subscription URL tokens, generated subscription bodies, private keys, or derived passwords.
 - The first implementation should optimize for the two-node-pair test matrix, not hypothetical large deployments.
 

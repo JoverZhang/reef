@@ -40,56 +40,53 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Write Reef environment
+      - name: Install Python dependencies
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Write configuration
         env:
-          REEF_WEB_ENV: ${{ secrets.REEF_WEB_ENV }}
+          CONFIG_YAML: ${{ secrets.CONFIG_YAML }}
         run: |
           set -euo pipefail
           umask 077
           python3 - <<'PY'
           import os
-          import re
           from pathlib import Path
           from urllib.parse import urlsplit, parse_qsl, unquote
 
-          payload = os.environ.get("REEF_WEB_ENV", "")
-          values = {}
-          for raw in payload.splitlines():
-              line = raw.strip()
-              if not line or line.startswith("#"):
-                  continue
-              key, separator, value = line.partition("=")
-              key, value = key.strip(), value.strip()
-              if not separator or key in values or not re.fullmatch(
-                  r"REEF_(SECRET|ENTRY_PORT_BASE|EXIT_PORT|ENTRY_OVERRIDE_BASE_DOMAIN|"
-                  r"ENTRY_[1-9][0-9]*|EXIT_[1-9][0-9]*|UPSTREAM_URL(?:_[1-9][0-9]*)?)", key
-              ):
-                  raise SystemExit("REEF_WEB_ENV contains an invalid, duplicate, or non-website variable")
-              if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                  value = value[1:-1]
-              values[key] = value
-          if not values.get("REEF_SECRET"):
-              raise SystemExit("REEF_WEB_ENV must contain REEF_SECRET")
+          from reef.core import parse_config_yaml, parse_config, write_config
 
-          # A multiline GitHub Secret does not cover every extracted/transformed value.
-          masks = set(values.values())
-          for key, value in values.items():
-              if key.startswith("REEF_UPSTREAM_URL"):
-                  try:
-                      url = urlsplit(value)
-                      masks.update(unquote(part) for part in url.path.split("/") if part)
-                      masks.update(v for _, v in parse_qsl(url.query))
-                      masks.update(filter(None, (url.username, url.password)))
-                  except ValueError:
-                      raise SystemExit("REEF_WEB_ENV contains an invalid upstream URL")
+          payload = os.environ.get("CONFIG_YAML", "")
+          try:
+              document = parse_config_yaml(payload)
+              if "ssh_private_key" in document:
+                  raise ValueError
+              config = parse_config(document)
+          except Exception:
+              raise SystemExit("CONFIG_YAML must contain valid website configuration without ssh_private_key")
+
+          # A multiline Secret does not cover every extracted/transformed value.
+          masks = {payload, *payload.splitlines()}
+          def mask_values(value):
+              if isinstance(value, str):
+                  masks.add(value)
+              elif isinstance(value, dict):
+                  for item in value.values():
+                      mask_values(item)
+              elif isinstance(value, list):
+                  for item in value:
+                      mask_values(item)
+          mask_values(document)
+          for value in config.upstream_urls:
+              url = urlsplit(value)
+              masks.update(unquote(part) for part in url.path.split("/") if part)
+              masks.update(v for _, v in parse_qsl(url.query))
+              masks.update(unquote(part) for part in (url.username, url.password) if part)
           for value in sorted(masks):
               if value:
                   escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
                   print("::add-mask::" + escaped, flush=True)
-          path = Path(".env")
-          path.touch(mode=0o600, exist_ok=True)
-          path.chmod(0o600)
-          path.write_text(payload + "\n")
+          write_config(document, Path("config.yaml"))
           PY
 
       - name: Install Vercel CLI
@@ -115,6 +112,6 @@ jobs:
           set -euo pipefail
           vercel deploy --prebuilt --prod
 
-      - name: Remove local environment files
+      - name: Remove private build inputs
         if: always()
-        run: rm -f .env .vercel/.env*.local build/website-build.log
+        run: rm -f config.yaml .vercel/.env*.local build/website-build.log

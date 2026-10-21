@@ -15,15 +15,15 @@ just smoke
 just delete
 just test
 just urls
-just reef-web-env
+just config-yaml
 just web-build
 just web-dev
 ```
 
 Their purpose:
 
-- `gen-secret`: generate a new `REEF_SECRET` and write it to `.env`. It refuses to overwrite an existing secret.
-- `set-ssh-key <path>`: base64-encode an OpenSSH private key and write `REEF_SSH_PRIVATE_KEY_B64` to `.env`.
+- `gen-secret`: generate a new `secret` in `config.yaml`. It refuses to overwrite an existing secret.
+- `set-ssh-key <path>`: write an OpenSSH private key as the multiline `ssh_private_key` in `config.yaml`.
 - `vendor`: download Linux amd64 runtime binaries into `bin/`.
 - `doctor`: validate local configuration, local tools, SSH connectivity, jump paths, remote systemd availability, permissions, and remote port availability.
 - `plan`: render locally, then run Ansible check mode and diff. It may connect to nodes but must not change them.
@@ -32,7 +32,7 @@ Their purpose:
 - `delete`: remove Reef-managed remote services and files. It asks for confirmation in an interactive shell and skips confirmation when `CI=1`.
 - `test`: run the local integration test matrix.
 - `urls`: render subscription artifacts and print path-only subscription URLs.
-- `reef-web-env`: print the effective website configuration as a multiline `.env` payload for `REEF_WEB_ENV`, without modifying files or uploading secrets. Refuse to output in CI because the payload includes the root seed.
+- `config-yaml`: print website configuration as YAML for `CONFIG_YAML`, excluding `ssh_private_key`, without modifying files or uploading secrets. Refuse to output in CI because the payload includes the root seed.
 - `web-build`: install Web dependencies and run a production build.
 - `web-dev`: render Web artifacts, install Web dependencies, and start the local development server.
 
@@ -49,62 +49,68 @@ Upstream subscription nodes are excluded because Reef does not know their egress
 
 ## Cluster Architecture
 
-The source of truth is environment variables plus one root seed:
-
-```text
-REEF_SECRET
-REEF_ENTRY_N
-REEF_EXIT_N
-REEF_ENTRY_PORT_BASE
-REEF_EXIT_PORT
-REEF_SSH_PRIVATE_KEY_B64
-```
-
-There is no user-maintained topology file and no local per-node secret state.
+The source of truth is the private root `config.yaml`, containing one root seed,
+cluster settings, upstream URLs, and standalone subscription nodes.
+There is no local per-node secret state. `.env`, `REEF_*` configuration overrides,
+and `subscriptions/extend.yaml` are not read. CI materializes the same file from
+the `CONFIG_YAML` Secret.
 
 ### Configuration Contract
 
-```env
-REEF_SECRET=<64 lowercase hex chars>
-REEF_SSH_PRIVATE_KEY_B64=<base64-encoded OpenSSH private key>
-
-REEF_ENTRY_PORT_BASE=20000
-REEF_EXIT_PORT=443
-REEF_ENTRY_OVERRIDE_BASE_DOMAIN=example.com
-
-REEF_ENTRY_1=sg,1.2.3.4
-REEF_ENTRY_2=jp,2.3.4.5
-
-REEF_EXIT_1=us,3.4.5.6
-REEF_EXIT_2=uk,4.5.6.7
+```yaml
+secret: "<64 lowercase hex chars>"
+ssh_private_key: |
+  <OpenSSH private key>
+cluster:
+  entry_port_base: 20000
+  exit_port: 443
+  entry_override_base_domain: example.com
+  entries:
+    - {name: sg, ip: 1.2.3.4}
+    - {name: jp, ip: 2.3.4.5}
+  exits:
+    - {name: us, ip: 3.4.5.6}
+    - {name: uk, ip: 4.5.6.7}
+subscriptions:
+  upstream_urls:
+    - "https://subscription.example.com/private-clash-url"
+  nodes: []
 ```
 
 Rules:
 
-- `REEF_SECRET` is exactly 64 lowercase hex characters.
+- `secret` is a quoted string of exactly 64 lowercase hex characters.
 - SSH user is always `root`.
-- `REEF_SSH_PRIVATE_KEY_B64` is the only supported SSH credential input.
-- Entry and exit values use `name,ip`.
+- `ssh_private_key` is the only supported SSH credential input and contains the
+  unencrypted OpenSSH private key as multiline text. It is optional for subscriptions.
+- Entry and exit lists contain `{name, ip}` mappings. Their order determines indices.
 - Node names are stable identities. Changing a node name creates a different node identity.
 - First phase supports a global SSH key only.
 - First phase supports all entries connected to all exits.
-- `REEF_ENTRY_OVERRIDE_BASE_DOMAIN` is optional. When set, at least one entry is required.
-- `REEF_ENTRY_OVERRIDE_BASE_DOMAIN` is a base domain only. It must not include a scheme, path, wildcard, or trailing dot.
+- `cluster.entry_override_base_domain` is optional. When set, at least one entry is required.
+- It is a base domain only, without a scheme, path, wildcard, or trailing dot.
 - A Reef cluster requires at least one exit; entries are optional. With
-  upstream subscriptions, both entries and exits may be omitted for subscription-only
-  use. `REEF_SECRET` is still required to derive private subscription URL tokens.
+  upstream subscriptions or extension nodes, both entries and exits may be omitted
+  for subscription-only use. `secret` is still required to derive private
+  subscription URL tokens.
 - Deployment recipes and `smoke` require a Reef cluster. Subscription-only use
   requires no SSH key, runtime binaries, or remote nodes.
+- `cluster` and `subscriptions` are optional mappings. Their lists default to empty.
+  Ports default to 20000 and 443. Unknown fields, duplicate YAML keys, incorrect
+  types, invalid nodes, and malformed YAML fail without echoing credentials.
+- `config.yaml` is ignored by git and written with mode `0600`.
+  `config.example.yaml` is the public template. Test processes may use
+  `TEST_CONFIG_FILE` only when `REEF_TEST_MODE=1`.
 
 ### Derived Model
 
 Reef derives:
 
-- entries: every `REEF_ENTRY_N`
-- exits: every `REEF_EXIT_N`
+- entries: the ordered `cluster.entries` list
+- exits: the ordered `cluster.exits` list
 - relay routes: every entry paired with every exit
 - direct routes: every exit
-- entry override hosts: `<entry-name>.<REEF_ENTRY_OVERRIDE_BASE_DOMAIN>` when the base domain is set
+- entry override hosts: `<entry-name>.<cluster.entry_override_base_domain>` when the base domain is set
 
 For `M` entries and `N` exits:
 
@@ -116,11 +122,14 @@ client routes = M * N + N
 
 Example:
 
-```env
-REEF_ENTRY_1=sg,1.2.3.4
-REEF_ENTRY_2=jp,2.3.4.5
-REEF_EXIT_1=us,3.4.5.6
-REEF_EXIT_2=uk,4.5.6.7
+```yaml
+cluster:
+  entries:
+    - {name: sg, ip: 1.2.3.4}
+    - {name: jp, ip: 2.3.4.5}
+  exits:
+    - {name: us, ip: 3.4.5.6}
+    - {name: uk, ip: 4.5.6.7}
 ```
 
 Derived client routes:
@@ -134,7 +143,7 @@ us direct
 uk direct
 ```
 
-When `REEF_ENTRY_OVERRIDE_BASE_DOMAIN=example.com`, the same entries also derive:
+When `cluster.entry_override_base_domain: example.com`, the same entries also derive:
 
 ```text
 sg.example.com
@@ -151,16 +160,16 @@ overridden to `127.0.0.1`; the original destination port is preserved.
 Entry relay ports are deterministic:
 
 ```text
-relay port for exit index N = REEF_ENTRY_PORT_BASE + N - 1
+relay port for exit index N = cluster.entry_port_base + N - 1
 ```
 
 Exit direct ports are fixed:
 
 ```text
-direct exit port = REEF_EXIT_PORT
+direct exit port = cluster.exit_port
 ```
 
-For two exits and `REEF_ENTRY_PORT_BASE=20000`:
+For two exits and `cluster.entry_port_base=20000`:
 
 ```text
 sg -> us  sg:20000
@@ -182,7 +191,7 @@ local -> each entry
 local -> first entry -> each exit
 ```
 
-The first entry is `REEF_ENTRY_1` and is the only deployment jump host in the first phase.
+The first entry is `cluster.entries[0]` and is the only deployment jump host in the first phase.
 
 When no entries exist:
 
@@ -192,7 +201,7 @@ local -> each exit
 
 ### Deterministic Secrets
 
-All cluster secrets are derived from `REEF_SECRET`, node identity, profile identity, and purpose-specific labels.
+All cluster secrets are derived from `secret`, node identity, profile identity, and purpose-specific labels.
 
 This exists for one reason: local rendering, CI rendering, deployed node configuration, and subscription Web rendering must produce the same result without reading mutable state.
 
@@ -214,7 +223,7 @@ TLS certificates must be deterministic:
 - fingerprint is derived from the rendered certificate
 
 P-256 is used for broad TLS client compatibility. The private scalar is derived
-from `REEF_SECRET` with HKDF and reduced into the P-256 scalar range; Reef does
+from `secret` with HKDF and reduced into the P-256 scalar range; Reef does
 not generate or store mutable TLS key state.
 
 ### Provider Boundary
@@ -260,7 +269,8 @@ The subscription Web is a Vercel-hosted Next.js app. It is not deployed by Ansib
 Build-time flow:
 
 ```text
-Vercel env
+CONFIG_YAML Secret
+  -> config.yaml
   -> Python render
   -> web/generated/subscriptions.ts
   -> Next.js build
@@ -277,7 +287,7 @@ GET /<token>
 There is no query token and no separate subscription hash variable. Each profile has a deterministic opaque token:
 
 ```text
-token = derive(REEF_SECRET, "subscription-url", profile_id)
+token = derive(secret, "subscription-url", profile_id)
 ```
 
 `subscription-url` is a derivation label, not a domain name. Reef does not store or render the public domain. `just urls` prints path-only URLs:
@@ -301,9 +311,8 @@ The subscription renderer receives the derived route model and the loaded provid
 
 ### Upstream Subscription Nodes
 
-`REEF_UPSTREAM_URL_N` optionally supplies multiple HTTP(S) Clash/Mihomo YAML
-subscriptions, numbered consecutively from 1. The existing `REEF_UPSTREAM_URL`
-is still accepted and, when combined with numbered URLs, is read first.
+`subscriptions.upstream_urls` optionally supplies an ordered list of HTTP(S)
+Clash/Mihomo YAML subscriptions.
 Each subscription generation fetches every configured subscription once and
 merges only their inline `proxies` lists. The existing Reef nodes remain available.
 Upstream nodes are not managed deployment nodes and do not change the cluster
@@ -313,8 +322,8 @@ The output set remains `client.yaml`, `linux-server.yaml`, and `quantumult-x.con
 All three use the templates in `subscriptions/`: DNS, rules, listeners, and policy
 behavior remain locally maintained. Upstream rules, DNS, groups, and remote
 providers are ignored.
-Reef nodes come first, followed by upstream subscriptions in numeric order,
-preserving each subscription's node order.
+Reef nodes come first, followed by upstream subscriptions in list order,
+then extension nodes, preserving each source's node order.
 
 The two general-purpose groups are:
 
@@ -338,7 +347,7 @@ generation fails rather than publishing an empty Quantumult X selector.
 
 Both Mihomo profiles preserve upstream node fields and names. Quantumult X
 uses the official Sub-Store 2.39.6 `proxy-utils.esm.mjs`, pinned by SHA-256,
-to convert HTTP, SOCKS5, AnyTLS, VLESS TCP, and Trojan TCP nodes with supported
+to convert HTTP, SOCKS5, AnyTLS, VLESS TCP/WebSocket, and Trojan TCP nodes with supported
 options, preserving credentials, TLS verification, SNI, and Reality parameters.
 Reef runs the parser and QX producer offline under Node.js 22 using an isolated
 browser context (`--experimental-vm-modules`). The release bundle is downloaded
@@ -353,7 +362,13 @@ available in Mihomo. Certificate pins enable TLS verification in Quantumult X,
 even with upstream `skip-cert-verify`, so the pin remains enforced. Quantumult X
 uses its own TLS client fingerprint; the upstream `client-fingerprint` is not
 transferred. Unspecified UDP and SNI values follow Sub-Store's defaults; VLESS
-TLS/Reality SNI uses `obfs-host` as in the official QX examples. Unexpected node
+TLS/Reality SNI uses `obfs-host` as in the official QX examples. For VLESS over
+TLS WebSocket, QX shares one host value between SNI and the HTTP Host header;
+nodes requiring different values or custom WebSocket headers are omitted.
+WebSocket conversion requires an explicit Host header; Reef supplies it when
+normalizing the common extension format so client defaults cannot diverge.
+VLESS encryption other than `none`, explicit XUDP/packetaddr encoding, and gRPC
+are outside the verified QX conversion contract and are omitted. Unexpected node
 loss or renaming by the converter fails generation. Conversion follows the
 [official Quantumult X node syntax](https://github.com/crossutility/Quantumult-X/blob/master/sample.conf).
 
@@ -361,10 +376,83 @@ Invalid or empty node lists, duplicate names within or across subscriptions,
 names conflicting with local nodes or policies, dependencies on
 upstream policy groups, and unrepresentable values fail generation without
 printing subscription URLs, bodies, or credentials. Fetch or parse failures do
-not replace previously generated subscription files. There is no background
+not skip the failed source or replace previously generated subscription files.
+Errors identify the source as `upstream URL #N`, numbered from 1 in fetch order
+(the order of `subscriptions.upstream_urls`), and distinguish a failed
+request, invalid response format, and an empty node list. There is no background
 poller: `just urls`, website builds, and other subscription rendering steps fetch
 fresh nodes; hosted contents change after the next successful website deployment.
-An upstream URL may contain credentials and must stay in `.env` / `REEF_WEB_ENV`.
+Upstream URLs may contain credentials and stay in private `config.yaml` / `CONFIG_YAML`.
+
+### Subscription Extension
+
+`subscriptions.nodes` in `config.yaml` is the optional list of standalone
+VLESS nodes. `config.example.yaml` documents the complete configuration.
+This is Reef's client-independent input format; it describes the endpoint and
+protocol settings once, then Reef generates Mihomo and Quantumult X syntax.
+No encoding or subscription hosting is required.
+
+```yaml
+subscriptions:
+  nodes:
+    - name: extra-vless
+      protocol: vless
+      server: proxy.example.com
+      port: 443
+      uuid: 00000000-0000-4000-8000-000000000001
+      transport:
+        type: tcp
+      tls:
+        sni: certificate.example.com
+        verify: true
+```
+
+The `nodes` list defaults to empty. Each node requires `name`,
+`protocol: vless`, `server`, `port`, and a valid `uuid`. Unknown fields, invalid
+types, and incompatible combinations fail validation without echoing values.
+Client-specific `proxies`, `network`, `grpc-opts`, and `reality-opts` inputs are
+not accepted in this list. Remote upstream subscriptions keep their Clash format.
+
+Optional fields:
+
+| Field | Meaning and default |
+| --- | --- |
+| `transport.type` | `tcp` (default), `ws`, or `grpc` |
+| `transport.path`, `transport.host` | WebSocket only; path defaults to `/`, host defaults to TLS SNI or `server` without TLS |
+| `transport.service_name` | gRPC only; defaults to an empty service name |
+| `tls` | A mapping enables TLS; omitting it disables TLS |
+| `tls.sni`, `tls.verify` | SNI defaults to `server`; certificate verification defaults to `true` |
+| `tls.client_fingerprint` | Mihomo TLS client fingerprint; defaults to `chrome` with Reality; QX uses its own fingerprint |
+| `tls.alpn` | Optional list for standard TLS; WebSocket requires `[http/1.1]`, gRPC requires `[h2]`; omit for Reality, whose ALPN is client-selected |
+| `tls.reality.public_key`, `tls.reality.short_id` | Enable Reality over TCP/gRPC; public key is required and short ID is optional, quoted hexadecimal |
+| `flow` | Optional `xtls-rprx-vision`, requiring TCP and TLS |
+| `udp` | UDP relay, default `true` |
+| `packet_encoding` | Optional `xudp` or `packetaddr`; available in Mihomo only |
+| `encryption` | Optional VLESS encryption string; omitted, empty, or `none` means no protocol encryption |
+
+For gRPC, for example, use `transport: {type: grpc, service_name: my-service}`.
+For WebSocket use `transport: {type: ws, path: /ws, host: certificate.example.com}`.
+These values must match the server. A TLS WebSocket node with a Host header
+different from its SNI remains available only in Mihomo because QX cannot preserve
+both values independently.
+The common format rejects WebSocket with Reality: the bundled Mihomo transport
+does not apply Reality to its WebSocket handshake. This avoids accepting a
+combination whose generated Mihomo settings would silently lose Reality.
+
+Extension nodes use the same ordering, automatic group membership, and QX
+conversion as upstream nodes. Duplicate names across all sources fail generation.
+Static client settings stay in the templates; extensions do not change deployment
+routes or managed nodes.
+
+Maintain each node once: both Mihomo profiles receive the mapped settings, while
+Quantumult X receives the converted node and policy references when supported.
+Transports outside the QX conversion contract, such as gRPC, are omitted with the
+existing skipped-node report. Rendering must never change a node's transport
+to work around a client limitation. Subscription-only use still requires at
+least one Quantumult X-compatible node across all sources.
+
+These nodes stay in the same private `config.yaml` as upstream URLs. The website
+export includes them in `CONFIG_YAML`; no separate extension Secret is needed.
 
 ### Website Deployment
 
@@ -373,39 +461,38 @@ The website deployment workflow runs after changes land on `master`. It can also
 Required GitHub Secrets:
 
 ```text
-REEF_WEB_ENV
+CONFIG_YAML
 VERCEL_TOKEN
 VERCEL_ORG_ID
 VERCEL_PROJECT_ID
 ```
 
-`REEF_WEB_ENV` is the single multiline `.env` payload for all subscription website
-configuration, including all upstream Clash URLs. It must include the root seed
-and either public topology values or upstream URLs (or both). It must not
-include `REEF_SSH_PRIVATE_KEY_B64` or test-only variables. No separate upstream
-GitHub Secret or Vercel setting is needed.
+`CONFIG_YAML` is the single multiline YAML payload for the website: root seed,
+cluster settings, upstream URLs, and standalone nodes. It uses the same schema
+as local `config.yaml`, excluding `ssh_private_key`. Test-only and unknown fields
+are rejected. At least one source of nodes is required.
 
-The workflow validates an allowlist of website variables, registers masks for
-individual values and upstream URL credentials/tokens, and writes `.env` with
-mode `0600`. CI suppresses raw generation exceptions and hides subscription URL
-tokens. Vercel build diagnostics are captured privately because compiler errors
-can quote generated source containing credentials; CI reports only build status.
-Environment files and the captured build log are removed even on failure. No
-subscription bodies are uploaded as workflow artifacts. The generated Web module
-is marked `server-only` so a client component cannot import its credentials.
+Run `just config-yaml` locally to validate and export this payload without
+fetching upstreams, changing local files, or uploading secrets. Copy its stdout
+into the GitHub Secret `CONFIG_YAML`. Export is refused in CI. The old
+`REEF_WEB_ENV` and `REEF_EXTEND_YAML` Secrets are no longer used.
+
+The workflow parses and validates the payload with the same configuration reader,
+registers masks for scalar values and decoded upstream URL credentials/tokens,
+and writes `config.yaml` with mode `0600` before building. CI suppresses raw
+generation exceptions and hides subscription URL tokens. Vercel build diagnostics
+are captured privately because compiler errors can quote generated source
+containing credentials; CI reports only build status. Configuration, Vercel
+environment files, and the captured build log are removed even on failure.
+No subscription bodies are uploaded as workflow artifacts. The generated Web
+module is marked `server-only` so a client component cannot import its credentials.
 
 For subscription-only use, the complete payload can be:
 
-```env
-REEF_SECRET=<64 lowercase hex chars>
-REEF_UPSTREAM_URL_1=https://subscription.example.com/private-clash-url
-REEF_UPSTREAM_URL_2=https://another.example.com/private-clash-url
+```yaml
+secret: "<64 lowercase hex chars>"
+subscriptions:
+  upstream_urls:
+    - "https://subscription.example.com/private-clash-url"
+    - "https://another.example.com/private-clash-url"
 ```
-
-Run `just reef-web-env` to generate this payload. It reads `.env` (or
-`REEF_ENV_FILE`) with environment variables taking precedence, validates the
-website configuration, and outputs only `REEF_SECRET`, both port settings
-(including defaults), the optional entry override base domain, all upstream URLs
-(normalized to `REEF_UPSTREAM_URL_N`), and all `REEF_ENTRY_N` / `REEF_EXIT_N` nodes.
-Copy the output into the GitHub Secret `REEF_WEB_ENV`, then run the website
-deployment workflow to publish changes.

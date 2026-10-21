@@ -1,6 +1,5 @@
 set dotenv-load := false
 
-env_file := env_var_or_default("REEF_ENV_FILE", ".env")
 python := ".venv/bin/python"
 ansible := ".venv/bin/ansible"
 ansible_playbook := ".venv/bin/ansible-playbook"
@@ -9,11 +8,11 @@ setup:
     test -x .venv/bin/python || uv venv --python 3.10 .venv
     uv pip install --python .venv/bin/python -r requirements.txt
 
-gen-secret:
-    python3 -m reef.cli.gen_secret --env "{{env_file}}"
+gen-secret: setup
+    {{python}} -m reef.cli.gen_secret
 
-set-ssh-key path:
-    python3 -m reef.cli.set_ssh_key --env "{{env_file}}" "{{path}}"
+set-ssh-key path: setup
+    {{python}} -m reef.cli.set_ssh_key "{{path}}"
 
 vendor:
     python3 -m reef.cli.vendor
@@ -41,8 +40,8 @@ delete: setup
 urls: setup
     {{python}} -m reef.cli.urls
 
-reef-web-env: setup
-    {{python}} -m reef.cli.reef_web_env
+config-yaml: setup
+    {{python}} -m reef.cli.config_yaml
 
 web-build: setup
     cd web && pnpm install --frozen-lockfile

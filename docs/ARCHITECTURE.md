@@ -2,7 +2,7 @@
 
 ## Product Shape
 
-Reef is a small declarative cluster deployment system. The operator maintains environment variables and one root seed; Reef derives the full cluster from those inputs, renders deployment artifacts, applies them to remote nodes, and generates subscription files.
+Reef is a small declarative cluster deployment system. The operator maintains a private `config.yaml` with one root seed; Reef derives the full cluster from those inputs, renders deployment artifacts, applies them to remote nodes, and generates subscription files.
 
 The first-phase product shape:
 
@@ -18,7 +18,7 @@ The first-phase product shape:
 .
 ├── AGENTS.md
 ├── justfile
-├── .env.example
+├── config.example.yaml
 ├── ansible/
 │   ├── apply.yml
 │   ├── delete.yml
@@ -34,6 +34,7 @@ The first-phase product shape:
 │       └── node/
 ├── subscriptions/
 │   ├── profiles.yaml
+│   ├── extension.py
 │   ├── render.py
 │   ├── upstream.py
 │   ├── substore.py
@@ -60,16 +61,24 @@ The first-phase product shape:
 `providers/<provider-id>/` is the only place that maintains concrete node-side transport implementation details. Reef loads every provider bundle in deterministic directory-name order.
 
 `subscriptions/` owns the generated subscription profile set and the rendering logic that translates the core route model plus loaded providers into subscription documents.
-`subscriptions/upstream.py` fetches and merges nodes from optional upstream Clash
-subscriptions and validates the supported Quantumult X conversion inputs.
+`reef/core.py` reads the root `config.yaml` and validates the shared local/CI
+configuration schema. `subscriptions/extension.py` validates the
+`subscriptions.nodes` list using Reef's client-independent VLESS schema, and normalizes its protocol,
+transport, and TLS settings into the existing converter input. The normalized
+nodes are also the Mihomo output. `subscriptions/upstream.py` fetches optional
+upstream Clash subscriptions, merges them with normalized extension nodes, and
+validates the supported Quantumult X conversion inputs.
 `substore.py` verifies the pinned official Sub-Store bundle and invokes
 `substore.mjs`, an offline adapter around its parser and QX producer. The adapter
 receives only node data through stdin and never inherits Reef secrets or prints
 converter diagnostics. The subscription templates own all static client
 configuration. A generation uses
 one merged upstream snapshot for all three profiles and the Web artifacts.
-With upstream URLs and no cluster nodes, the core model has no routes or node
-secrets; the same subscription and Web rendering path works without deployment.
+With upstream URLs or extension nodes and no cluster nodes, the core model has no
+routes or node secrets; the same subscription and Web rendering path works without deployment.
+`config.yaml` is the only private configuration input and is ignored by git.
+`config.example.yaml` documents its shape. The website workflow restores it from
+`CONFIG_YAML`; `just config-yaml` exports that payload without the SSH private key.
 
 ## Generated Artifacts
 

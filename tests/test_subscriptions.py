@@ -17,18 +17,18 @@ from urllib.error import URLError
 import yaml
 
 from reef import core
-from reef.cli import reef_web_env, render as render_cli, urls
+from reef.cli import config_yaml, render as render_cli, urls
 from subscriptions import render, upstream
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "upstream.yaml"
-ENV = {
-    "REEF_SECRET": "11" * 32,
-    "REEF_ENTRY_1": "sg,192.0.2.10",
-    "REEF_ENTRY_2": "jp,192.0.2.11",
-    "REEF_EXIT_1": "us,192.0.2.20",
-    "REEF_EXIT_2": "uk,192.0.2.21",
-    "REEF_ENTRY_OVERRIDE_BASE_DOMAIN": "example.test",
+CONFIG = {
+    "secret": "11" * 32,
+    "cluster": {
+        "entries": [{"name": "sg", "ip": "192.0.2.10"}, {"name": "jp", "ip": "192.0.2.11"}],
+        "exits": [{"name": "us", "ip": "192.0.2.20"}, {"name": "uk", "ip": "192.0.2.21"}],
+        "entry_override_base_domain": "example.test",
+    },
 }
 
 
@@ -59,7 +59,7 @@ def subscription_server():
 class SubscriptionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.model = core.build_model(core.parse_config(ENV))
+        cls.model = core.build_model(core.parse_config(CONFIG))
 
     def setUp(self):
         self.context = core.subscription_context(self.model)
@@ -203,9 +203,32 @@ class SubscriptionTests(unittest.TestCase):
                 self.assertNotIn("private-token", str(error.exception))
         with (
             patch.object(upstream, "urlopen", side_effect=URLError("private-token")),
-            self.assertRaisesRegex(ValueError, "^upstream subscription 1 fetch failed$"),
+            self.assertRaisesRegex(ValueError, "^upstream URL #1 fetch failed$"),
         ):
             upstream.load_nodes(["https://example.test/private-token"])
+
+    def test_later_upstream_failure_reports_its_number_without_falling_back(self):
+        urls = [f"https://example.test/private-token-{index}" for index in range(1, 4)]
+        valid = yaml.safe_dump({"proxies": self.proxies[:1]}).encode()
+        for response, reason in (
+            (URLError("private-token"), "fetch failed"),
+            (TimeoutError("private-token"), "fetch failed"),
+            (io.BytesIO(b"proxies: []"), "returned an empty proxies list"),
+            (io.BytesIO(b"proxies: [private-password"), "must be valid YAML"),
+        ):
+            with (
+                self.subTest(reason=reason),
+                patch.object(
+                    upstream, "urlopen",
+                    side_effect=[io.BytesIO(valid), response, io.BytesIO(valid)],
+                ) as fetch,
+                self.assertRaises(ValueError) as error,
+            ):
+                upstream.load_nodes(urls, self.proxies[1:2])
+            self.assertEqual(str(error.exception), f"upstream URL #2 {reason}")
+            self.assertEqual(fetch.call_count, 2)
+            self.assertNotIn("private-token", str(error.exception))
+            self.assertNotIn("private-password", str(error.exception))
 
     def test_render_fetches_once_updates_nodes_and_preserves_files_on_failure(self):
         with (
@@ -222,9 +245,8 @@ class SubscriptionTests(unittest.TestCase):
                 self.model,
                 config=core.parse_config(
                     {
-                        **ENV,
-                        "REEF_UPSTREAM_URL_2": second_url,
-                        "REEF_UPSTREAM_URL_1": url,
+                        **CONFIG,
+                        "subscriptions": {"upstream_urls": [url, second_url]},
                     }
                 ),
             )
@@ -283,9 +305,13 @@ class SubscriptionTests(unittest.TestCase):
                 self.assertNotIn("TUIC", [p["name"] for p in client["proxies"]])
                 files = [p for p in Path(directory).rglob("*") if p.is_file()]
                 previous = {p: p.read_bytes() for p in files}
-                for status, body in ((503, b"unavailable"), (200, b"proxies: [private-password")):
+                for status, body in (
+                    (503, b"unavailable"),
+                    (200, b"proxies: [private-password"),
+                    (200, b"proxies: []"),
+                ):
                     second_state.update(status=status, body=body)
-                    with self.assertRaises(ValueError):
+                    with self.assertRaisesRegex(ValueError, "^upstream URL #2 "):
                         core.render_web(model)
                     self.assertEqual({p: p.read_bytes() for p in files}, previous)
 
@@ -294,7 +320,7 @@ class SubscriptionTests(unittest.TestCase):
         with (
             patch.object(upstream, "urlopen", side_effect=[io.BytesIO(body), io.BytesIO(body)]),
             self.assertRaisesRegex(
-                ValueError, "^upstream subscription 2 node 1 has a duplicate name$"
+                ValueError, "^upstream URL #2 node 1 has a duplicate name$"
             ),
         ):
             upstream.load_nodes(
@@ -307,9 +333,11 @@ class SubscriptionTests(unittest.TestCase):
     def test_subscription_only_uses_compatible_nodes_from_later_sources(self):
         config = core.parse_config(
             {
-                "REEF_SECRET": ENV["REEF_SECRET"],
-                "REEF_UPSTREAM_URL_1": "https://first.example.test/private-token",
-                "REEF_UPSTREAM_URL_2": "https://second.example.test/private-token",
+                "secret": CONFIG["secret"],
+                "subscriptions": {"upstream_urls": [
+                    "https://first.example.test/private-token",
+                    "https://second.example.test/private-token",
+                ]},
             }
         )
         self.context = core.subscription_context(core.build_model(config))
@@ -325,69 +353,46 @@ class SubscriptionTests(unittest.TestCase):
         self.assertIn(f"tag={proxies[1]['name']}", profiles["quantumult-x"])
         self.assertNotIn(proxies[0]["name"], profiles["quantumult-x"])
 
-    def test_numbered_urls_use_numeric_order_after_the_legacy_url(self):
-        numbered = {
-            f"REEF_UPSTREAM_URL_{index}": f"https://example.test/private-token-{index}"
-            for index in range(10, 0, -1)
-        }
-        legacy = "https://example.test/private-legacy"
-        config = core.parse_config({**ENV, **numbered, "REEF_UPSTREAM_URL": legacy})
-        self.assertEqual(
-            config.upstream_urls,
-            [legacy] + [numbered[f"REEF_UPSTREAM_URL_{index}"] for index in range(1, 11)],
-        )
-        self.assertEqual(core.parse_config(ENV).upstream_urls, [])
+    def test_upstream_urls_preserve_list_order(self):
+        sources = [f"https://example.test/private-token-{i}" for i in range(10, 0, -1)]
+        config = core.parse_config({**CONFIG, "subscriptions": {"upstream_urls": sources}})
+        self.assertEqual(config.upstream_urls, sources)
+        self.assertEqual(core.parse_config(CONFIG).upstream_urls, [])
 
-    def test_numbered_urls_must_be_consecutive_and_valid(self):
+    def test_upstream_urls_must_be_a_list_of_valid_urls(self):
         valid = "https://example.test/private-token"
-        for values in (
-            {"REEF_UPSTREAM_URL_0": valid},
-            {"REEF_UPSTREAM_URL_2": valid},
-            {"REEF_UPSTREAM_URL_1": valid, "REEF_UPSTREAM_URL_3": valid},
-        ):
-            with self.subTest(keys=list(values)), self.assertRaisesRegex(ValueError, "consecutive"):
-                core.parse_config({**ENV, **values})
-        for url in ("", " ", "file:///private-token", "https://host:bad/private-token"):
-            with (
-                self.subTest(url=url),
-                self.assertRaisesRegex(
-                    ValueError, r"^REEF_UPSTREAM_URL_2 must be an HTTP\(S\) subscription URL$"
-                ),
-            ):
-                core.parse_config(
-                    {
-                        **ENV,
-                        "REEF_UPSTREAM_URL_1": valid,
-                        "REEF_UPSTREAM_URL_2": url,
-                    }
-                )
+        for values in (valid, None, {"1": valid}):
+            with self.assertRaisesRegex(ValueError, "must be a list"):
+                core.parse_config({**CONFIG, "subscriptions": {"upstream_urls": values}})
+        for url in ("", " ", "file:///private-token", "https://host:bad/private-token", True, 123):
+            with self.assertRaisesRegex(ValueError, r"^upstream URL #2 must be an HTTP\(S\) subscription URL$"):
+                core.parse_config({**CONFIG, "subscriptions": {"upstream_urls": [valid, url]}})
 
-    def test_web_env_includes_upstream_and_round_trips(self):
+    def test_config_yaml_includes_upstreams_and_round_trips(self):
         values = {
-            **ENV,
-            "REEF_UPSTREAM_URL": "https://example.test/private-token?format=clash&x=1",
-            "REEF_UPSTREAM_URL_2": "https://second.example.test/private-token?format=clash&x=2",
-            "REEF_UPSTREAM_URL_1": "https://first.example.test/private-token?format=clash&x=1",
+            **CONFIG,
+            "subscriptions": {"upstream_urls": [
+                "https://second.example.test/private-token?format=clash&x=2",
+                "https://first.example.test/private-token?format=clash&x=1",
+            ]},
         }
         output = io.StringIO()
         with (
             patch.dict(os.environ, {}, clear=True),
-            patch.object(reef_web_env, "load_env", return_value=values.copy()),
+            patch.object(config_yaml, "load_config", return_value=values.copy()),
             redirect_stdout(output),
         ):
-            self.assertEqual(reef_web_env.main(), 0)
-        exported = dict(line.split("=", 1) for line in output.getvalue().splitlines())
+            self.assertEqual(config_yaml.main(), 0)
+        exported = core.parse_config_yaml(output.getvalue())
+        self.assertEqual(exported, values)
         self.assertEqual(core.parse_config(exported), core.parse_config(values))
-        self.assertEqual(exported["REEF_UPSTREAM_URL_1"], values["REEF_UPSTREAM_URL"])
-        self.assertEqual(exported["REEF_UPSTREAM_URL_2"], values["REEF_UPSTREAM_URL_1"])
-        self.assertEqual(exported["REEF_UPSTREAM_URL_3"], values["REEF_UPSTREAM_URL_2"])
         with (
             patch.dict(os.environ, {"CI": "1"}, clear=True),
             redirect_stdout(io.StringIO()) as stdout,
             redirect_stderr(io.StringIO()),
         ):
-            self.assertEqual(reef_web_env.main(), 1)
+            self.assertEqual(config_yaml.main(), 1)
             self.assertEqual(stdout.getvalue(), "")
         for url in ("file:///private-token", "https://", "https://example.test/\nprivate-token"):
-            with self.assertRaisesRegex(ValueError, "HTTP\\(S\\)"):
-                core.parse_config({**ENV, "REEF_UPSTREAM_URL": url})
+            with self.assertRaisesRegex(ValueError, r"HTTP\(S\)"):
+                core.parse_config({**CONFIG, "subscriptions": {"upstream_urls": [url]}})

@@ -10,11 +10,13 @@ import yaml
 from subscriptions.substore import convert
 
 
-def load_nodes(urls: list[str]) -> list[dict[str, Any]]:
+def load_nodes(
+    urls: list[str], extend_proxies: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     nodes = []
     names = set()
     for source_index, url in enumerate(urls, start=1):
-        source = f"upstream subscription {source_index}"
+        source = f"upstream URL #{source_index}"
         try:
             request = Request(url, headers={"User-Agent": "clash.meta", "Accept": "text/yaml"})
             with urlopen(request, timeout=20) as response:
@@ -22,32 +24,45 @@ def load_nodes(urls: list[str]) -> list[dict[str, Any]]:
         except (OSError, ValueError, HTTPException):
             # Network errors can include the private subscription URL.
             raise ValueError(f"{source} fetch failed") from None
-        try:
-            document = yaml.safe_load(body)
-        except (yaml.YAMLError, UnicodeError):
-            # YAML parser errors can include lines containing credentials.
-            raise ValueError(f"{source} must be valid YAML") from None
-        proxies = document.get("proxies") if isinstance(document, dict) else None
-        if not isinstance(proxies, list) or not proxies:
-            raise ValueError(f"{source} must contain a nonempty proxies list")
-        for index, proxy in enumerate(proxies, start=1):
-            label = f"{source} node {index}"
-            if not isinstance(proxy, dict):
-                raise ValueError(f"{label} must be a mapping")
-            for key in ("name", "type", "server"):
-                value = proxy.get(key)
-                if not isinstance(value, str) or not value.strip() or "\n" in value or "\r" in value:
-                    raise ValueError(f"{label} must have a valid {key}")
-            port = proxy.get("port")
-            if type(port) is not int or not 1 <= port <= 65535:
-                raise ValueError(f"{label} must have a valid port")
-            if proxy["name"] in names:
-                raise ValueError(f"{label} has a duplicate name")
-            names.add(proxy["name"])
-            if proxy.get("dialer-proxy"):
-                raise ValueError(f"{label} cannot depend on an upstream proxy or policy")
-        nodes.extend(proxies)
+        nodes.extend(_parse_nodes(body, source, names))
+    if extend_proxies:
+        validate_nodes(extend_proxies, "subscription extension", names)
+        nodes.extend(extend_proxies)
     return nodes
+
+
+def _parse_nodes(body: str | bytes, source: str, names: set[str]) -> list[dict[str, Any]]:
+    try:
+        document = yaml.safe_load(body)
+    except (yaml.YAMLError, UnicodeError):
+        # YAML parser errors can include lines containing credentials.
+        raise ValueError(f"{source} must be valid YAML") from None
+    proxies = document.get("proxies") if isinstance(document, dict) else None
+    if not isinstance(proxies, list):
+        raise ValueError(f"{source} must contain a proxies list")
+    if not proxies:
+        raise ValueError(f"{source} returned an empty proxies list")
+    validate_nodes(proxies, source, names)
+    return proxies
+
+
+def validate_nodes(proxies: list[dict[str, Any]], source: str, names: set[str]) -> None:
+    for index, proxy in enumerate(proxies, start=1):
+        label = f"{source} node {index}"
+        if not isinstance(proxy, dict):
+            raise ValueError(f"{label} must be a mapping")
+        for key in ("name", "type", "server"):
+            value = proxy.get(key)
+            if not isinstance(value, str) or not value.strip() or "\n" in value or "\r" in value:
+                raise ValueError(f"{label} must have a valid {key}")
+        port = proxy.get("port")
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError(f"{label} must have a valid port")
+        if proxy["name"] in names:
+            raise ValueError(f"{label} has a duplicate name")
+        names.add(proxy["name"])
+        if proxy.get("dialer-proxy"):
+            raise ValueError(f"{label} cannot depend on an upstream proxy or policy")
 
 
 def quantumult_x_nodes(proxies: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -73,7 +88,8 @@ def _qx_supported(proxy: dict[str, Any], index: int) -> bool:
     kind = proxy["type"]
     if kind not in {"http", "socks5", "anytls", "vless", "trojan"}:
         return False
-    if proxy.get("network", "tcp") != "tcp":
+    network = proxy.get("network", "tcp")
+    if network != "tcp" and not (kind == "vless" and network == "ws"):
         return False
     # Fail closed on options outside the verified conversion contract; the
     # original node remains intact in both Mihomo profiles.
@@ -82,8 +98,31 @@ def _qx_supported(proxy: dict[str, Any], index: int) -> bool:
         "skip-cert-verify", "client-fingerprint", "fingerprint", "alpn", "udp", "tfo",
         "reality-opts",
     }
-    supported.update({"uuid", "flow"} if kind == "vless" else {"username", "password"})
-    if set(proxy) - supported or proxy.get("flow", "") not in {"", "xtls-rprx-vision"}:
+    supported.update(
+        {"uuid", "flow", "encryption"} if kind == "vless" else {"username", "password"}
+    )
+    ws_values = []
+    if network == "ws":
+        supported.add("ws-opts")
+        ws = proxy.get("ws-opts", {})
+        if not isinstance(ws, dict) or set(ws) - {"path", "headers"}:
+            return False
+        headers = ws.get("headers", {})
+        if not isinstance(headers, dict) or set(headers) != {"Host"} or not headers["Host"]:
+            return False
+        ws_values = list(headers.values()) + ([ws["path"]] if "path" in ws else [])
+        if any(not isinstance(value, str) for value in ws_values):
+            return False
+        sni = proxy.get("servername") or proxy.get("sni") or headers["Host"]
+        if proxy.get("tls") and headers["Host"] != sni:
+            # QX's obfs-host is both TLS SNI and WebSocket Host.
+            return False
+    if (
+        set(proxy) - supported
+        or proxy.get("flow", "") not in ("", "xtls-rprx-vision")
+        or (proxy.get("flow") and (network != "tcp" or not proxy.get("tls")))
+        or proxy.get("encryption", "none") not in ("", "none")
+    ):
         return False
     reality = proxy.get("reality-opts", {})
     if not isinstance(reality, dict) or set(reality) - {"public-key", "short-id"}:
@@ -110,10 +149,11 @@ def _qx_supported(proxy: dict[str, Any], index: int) -> bool:
             raise ValueError(f"upstream node {index} has invalid alpn")
     # QX has no quoting/escaping for commas, line separators, or policy option
     # names. Check values before handing them to a third-party formatter.
-    for key in ("name", "server", "username", "password", "uuid", "sni", "servername"):
-        if key not in proxy:
-            continue
-        value = proxy[key]
+    values = [
+        proxy[key] for key in ("name", "server", "username", "password", "uuid", "sni", "servername")
+        if key in proxy
+    ] + ws_values
+    for value in values:
         if not isinstance(value, (str, int)) or any(
             c == "," or ord(c) < 32 or c in "\x7f\x85\u2028\u2029" for c in str(value)
         ) or str(value) != str(value).strip():

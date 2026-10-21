@@ -1,34 +1,24 @@
 from __future__ import annotations
 
-import argparse
 import secrets
-from pathlib import Path
+import sys
 
-
-def upsert_env(path: Path, key: str, value: str, *, overwrite: bool = False) -> None:
-    lines = path.read_text().splitlines() if path.exists() else []
-    out: list[str] = []
-    found = False
-    for line in lines:
-        if line.startswith(f"{key}="):
-            found = True
-            if not overwrite:
-                raise SystemExit(f"{key} already exists in {path}")
-            out.append(f"{key}={value}")
-        else:
-            out.append(line)
-    if not found:
-        out.append(f"{key}={value}")
-    path.write_text("\n".join(out).rstrip() + "\n")
-    path.chmod(0o600)
+from reef.core import config_path, load_config, write_config
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--env", default=".env")
-    args = parser.parse_args()
-    upsert_env(Path(args.env), "REEF_SECRET", secrets.token_hex(32))
-    print(f"wrote REEF_SECRET to {args.env}")
+    try:
+        path = config_path()
+        document = load_config(path) if path.exists() else {}
+        if "secret" in document:
+            raise ValueError("secret already exists in config.yaml")
+        document["secret"] = secrets.token_hex(32)
+        write_config(document, path)
+    except (ValueError, OSError) as exc:
+        message = str(exc) if isinstance(exc, ValueError) else "could not write config.yaml"
+        print(f"gen-secret: {message}", file=sys.stderr)
+        return 1
+    print("wrote secret to config.yaml")
     return 0
 
 
