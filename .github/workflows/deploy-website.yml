@@ -55,6 +55,7 @@ jobs:
           from urllib.parse import urlsplit, parse_qsl, unquote
 
           from reef.core import parse_config_yaml, parse_config, write_config
+          from subscriptions.mihomo import provider_upstreams
 
           payload = os.environ.get("CONFIG_YAML", "")
           try:
@@ -78,8 +79,8 @@ jobs:
                       mask_values(item)
           mask_values(document)
           upstream_urls = config.upstream_urls + [
-              provider["url"] for provider in config.proxy_providers.values()
-              if provider["type"] == "http"
+              source["url"] for provider in config.proxy_providers.values()
+              for source in provider_upstreams(provider)
           ]
           for value in upstream_urls:
               url = urlsplit(value)

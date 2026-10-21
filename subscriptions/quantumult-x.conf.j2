@@ -28,9 +28,6 @@ trojan={{ pair.server_host }}:{{ pair.server_port }}, password={{ pair.password 
 static=Reef, AUTO{% for proxy in qx_proxy_names %}, {{ proxy }}{% endfor %}
 url-latency-benchmark=AUTO{% for proxy in qx_proxy_names %}, {{ proxy }}{% endfor %}, check-interval=300, tolerance=50
 {% endif -%}
-{% for group in qx_entry_groups %}
-url-latency-benchmark={{ group.name }}{% for proxy in group.proxies %}, {{ proxy }}{% endfor %}, check-interval=300, tolerance=0
-{%- endfor %}
 
 [filter_remote]
 https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/OpenAI/OpenAI.list, tag=bm_openai, force-policy=Reef, enabled=true
@@ -40,10 +37,7 @@ https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Quant
 https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/QuantumultX/ChinaMax/ChinaMax.list, tag=bm_china, force-policy=direct, enabled=true
 
 [filter_local]
-{% for rule in qx_entry_override_rules %}
-{{ rule }}
-{%- endfor %}
-{% for rule in qx_entry_direct_rules %}
+{% for rule in qx_direct_rules %}
 {{ rule }}
 {%- endfor %}
 geoip, cn, direct

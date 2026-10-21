@@ -111,6 +111,27 @@ class CISecretTests(unittest.TestCase):
         self.assertIn("::add-mask::private%0A::error::injection", result.stdout)
         self.assertIn("::add-mask::private%0Dpassword", result.stdout)
 
+    def test_workflow_masks_every_named_upstream_in_multiple_collections(self):
+        sources = [
+            {"name": "a", "url": URL},
+            {"name": "b", "url": "https://user:encoded%2Dpassword@example.test/encoded%2Dpath?token=encoded%2Dquery"},
+        ]
+        document = {
+            "secret": SECRET,
+            "proxy-providers": {
+                "a": {"type": "http", "upstreams": sources[:1]},
+                "combined": {"type": "http", "upstreams": sources},
+            },
+        }
+        result = self.run_step("Write configuration", CONFIG_YAML=core.dump_config(document))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertTrue(all(line.startswith("::add-mask::") for line in lines))
+        for value in (URL, sources[1]["url"], "private-password", "private-path", "private-query",
+                      "encoded-password", "encoded-path", "encoded-query"):
+            self.assertIn("::add-mask::" + value.replace("%", "%25"), lines)
+        self.assertEqual(core.load_config(self.root / "config.yaml"), document)
+
     def test_vercel_build_diagnostics_stay_private_on_success_and_failure(self):
         binary = self.root / "vercel"
         for status in (0, 1):

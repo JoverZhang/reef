@@ -4,29 +4,33 @@
 secret: "replace_with_64_lowercase_hex_chars"
 
 proxy-providers:
-  relay-a:
+  xq:
     type: http
-    url: "https://subscription-a.example.com/private-clash-url"
+    upstreams:
+      - &xq {name: xq, url: "https://xq.example.com/private-clash-url"}
+      - &xq2 {name: xq2, url: "https://xq2.example.com/private-clash-url"}
     filter: "Hong Kong|Singapore|Japan"
     exclude-filter: "Remaining|Expires|Traffic"
-    override:
-      additional-prefix: "A | "
 
-  relay-b:
+  lx:
     type: http
-    url: "https://subscription-b.example.com/private-clash-url"
+    upstreams:
+      - &lx {name: lx, url: "https://lx.example.com/private-clash-url"}
     filter: "Hong Kong|Singapore|Japan"
     exclude-filter: "Remaining|Expires|Traffic"
-    override:
-      additional-prefix: "B | "
+
+  # An ordinary collection: list each upstream explicitly, in any combination.
+  # Reuse the same names to keep node identities consistent across collections.
+  all:
+    type: http
+    upstreams: [*xq, *xq2, *lx]
+    filter: "Hong Kong|Singapore|Japan"
+    exclude-filter: "Remaining|Expires|Traffic"
 
   exits:
     type: inline
-    # This field belongs on the exit nodes, not on the intermediate nodes.
-    override:
-      dialer-proxy: RELAY
     payload:
-      - name: MEGABOX
+      - name: "US Los Angeles | MEGABOX"
         type: vless
         server: megabox.example.com
         port: 8881
@@ -39,43 +43,59 @@ proxy-providers:
         reality-opts:
           public-key: "replace_with_server_reality_public_key"
           short-id: ""
-      - name: sg1
+        dialer-proxy: RELAY-MEGABOX
+      - name: "SG Singapore 1 | Alibaba Cloud"
         type: trojan
         server: sg1.example.com
         port: 443
-        password: "replace_with_deployed_trojan_password"
+        password: "replace_with_deployed_sg1_trojan_password"
         sni: sg1.example.com
         skip-cert-verify: false
-        # If sg1 uses a self-signed certificate, supply its SHA-256 pin:
+        # For a self-signed certificate, supply its SHA-256 pin:
         # fingerprint: "replace_with_64_hex_certificate_fingerprint"
+        dialer-proxy: RELAY-sg1
+      - name: "SG Singapore 2 | Alibaba Cloud"
+        type: trojan
+        server: sg2.example.com
+        port: 443
+        password: "replace_with_deployed_sg2_trojan_password"
+        sni: sg2.example.com
+        skip-cert-verify: false
+        dialer-proxy: RELAY-sg2
 
 proxy-groups:
-  # Website sees the selected exit's IP. Only exits belong here.
+  # The selected exit determines the public IP seen by the destination.
   - name: PROXY
     type: select
     use: [exits]
 
-  # Choose a specific intermediate, or RELAY-AUTO for automatic selection.
-  - name: RELAY
+  # Each exit remembers its own intermediate collection choice.
+  - name: RELAY-MEGABOX
     type: select
-    proxies: [RELAY-AUTO]
-    use: [relay-a, relay-b]
+    proxies: [all, xq, lx]
+  - name: RELAY-sg1
+    type: select
+    proxies: [all, xq, lx]
+  - name: RELAY-sg2
+    type: select
+    proxies: [all, xq, lx]
 
-  - name: RELAY-AUTO
+  # Keep these groups visible for automatic selection or pinning in the client.
+  # url-test defaults: gstatic generate_204, interval 300, timeout 5000,
+  # tolerance 50, lazy true. Set native fields here to override them.
+  - name: xq
     type: url-test
-    use: [relay-a, relay-b]
-    url: https://www.gstatic.com/generate_204
-    interval: 300
-    timeout: 5000
-    tolerance: 50
-    lazy: true
+    use: [xq]
+  - name: lx
+    type: url-test
+    use: [lx]
+  - name: all
+    type: url-test
+    use: [all]
 
-# These native fields also allow a fixed intermediate:
-#   dialer-proxy: "A | actual node name"
-# An exit collection can be type: http with URL/filter instead of inline/payload.
-# If the exits need different intermediates, remove the exits provider's override
-# and set dialer-proxy: RELAY-MEGABOX / RELAY-sg1 on the corresponding payload
-# nodes. Define each group like RELAY, with its own preferred node first.
-# Do not use include-all in RELAY: it would include exits and create a cycle.
+# For a fixed intermediate, set an exit's dialer-proxy to "xq | actual node name".
+# Shared automatic groups share their selected node across exits that use them.
+# Avoid include-all in relay groups: including exits can create a cycle.
+# HTTP providers can also supply exits with override.dialer-proxy.
 # QX relay conversion is pending. Publishing updates both Mihomo subscriptions;
 # the QX URL returns HTTP 503 until a compatible configuration is published.

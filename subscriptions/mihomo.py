@@ -59,17 +59,28 @@ def validate_input(values: dict[str, Any]) -> None:
         label = f"proxy-provider #{index}"
         _name(name, label)
         _mapping(spec, {
-            "type", "url", "interval", "payload", "filter", "exclude-filter",
+            "type", "url", "upstreams", "interval", "payload", "filter", "exclude-filter",
             "exclude-type", "override",
         }, label)
         if spec.get("type") not in ("http", "inline"):
             raise ValueError(f"{label} type must be http or inline")
         if spec["type"] == "http":
-            _url(spec.get("url"), f"{label} url")
+            if ("url" in spec) == ("upstreams" in spec):
+                raise ValueError(f"{label} requires either url or upstreams")
+            if "upstreams" in spec:
+                if not isinstance(spec["upstreams"], list) or not spec["upstreams"]:
+                    raise ValueError(f"{label} upstreams must be a nonempty list")
+                for position, source in enumerate(spec["upstreams"], start=1):
+                    source_label = f"{label} upstream #{position}"
+                    _mapping(source, {"name", "url"}, source_label)
+                    _name(source.get("name"), f"{source_label} name")
+                    _url(source.get("url"), f"{source_label} url")
+            else:
+                _url(spec["url"], f"{label} url")
             if "payload" in spec:
                 raise ValueError(f"{label} HTTP fallback payload is not supported")
-        elif not isinstance(spec.get("payload"), list) or "url" in spec:
-            raise ValueError(f"{label} inline type requires payload and no url")
+        elif not isinstance(spec.get("payload"), list) or {"url", "upstreams"}.intersection(spec):
+            raise ValueError(f"{label} inline type requires payload and no upstream URLs")
         else:
             validate_nodes(spec["payload"], label, set(), allow_dialer=True)
         if "interval" in spec and (type(spec["interval"]) is not int or spec["interval"] < 0):
@@ -122,48 +133,58 @@ def validate_input(values: dict[str, Any]) -> None:
         raise ValueError("proxy-groups must define PROXY for the three profile templates")
 
 
+def provider_upstreams(spec: dict) -> list[dict]:
+    if spec["type"] != "http":
+        return []
+    return spec["upstreams"] if "upstreams" in spec else [{"url": spec["url"]}]
+
+
 def load_providers(specs: dict[str, dict]) -> tuple[list[dict], dict[str, list[str]]]:
     nodes: dict[str, dict] = {}
     members = {}
     cache = {}
     for index, (name, spec) in enumerate(specs.items(), start=1):
         label = f"proxy-provider #{index}"
-        if spec["type"] == "http":
-            url = spec["url"]
-            if url not in cache:
-                source = f"upstream URL #{len(cache) + 1} ({label})"
-                cache[url] = fetch_nodes(url, source)
-            candidates = cache[url]
-        else:
-            candidates = spec["payload"]
         include = _patterns(spec.get("filter", ""), f"{label} filter")
         exclude = _patterns(spec.get("exclude-filter", ""), f"{label} exclude-filter")
         excluded_types = spec.get("exclude-type", "").split("|")
-        selected = []
+        selected = {}
         override = spec.get("override", {})
-        for candidate in candidates:
-            if (
-                (include and not any(pattern.search(candidate["name"]) for pattern in include))
-                or any(pattern.search(candidate["name"]) for pattern in exclude)
-                or candidate["type"] in excluded_types
-            ):
-                continue
-            node = copy.deepcopy(candidate)
-            node["name"] = (
-                override.get("additional-prefix", "") + node["name"]
-                + override.get("additional-suffix", "")
-            )
-            if "dialer-proxy" in override:
-                node["dialer-proxy"] = override["dialer-proxy"]
-            selected.append(node)
+        sources = provider_upstreams(spec) if spec["type"] == "http" else [{}]
+        for source in sources:
+            if spec["type"] == "http":
+                url = source["url"]
+                if url not in cache:
+                    cache[url] = fetch_nodes(url, f"upstream URL #{len(cache) + 1} ({label})")
+                candidates = cache[url]
+            else:
+                candidates = spec["payload"]
+            prefix = f"{source['name']} | " if "name" in source else ""
+            for candidate in candidates:
+                if (
+                    (include and not any(pattern.search(candidate["name"]) for pattern in include))
+                    or any(pattern.search(candidate["name"]) for pattern in exclude)
+                    or candidate["type"] in excluded_types
+                ):
+                    continue
+                node = copy.deepcopy(candidate)
+                node["name"] = (
+                    override.get("additional-prefix", "") + prefix + node["name"]
+                    + override.get("additional-suffix", "")
+                )
+                if "dialer-proxy" in override:
+                    node["dialer-proxy"] = override["dialer-proxy"]
+                if node["name"] in selected and node != selected[node["name"]]:
+                    raise ValueError(f"{label} has a conflicting node name")
+                selected.setdefault(node["name"], node)
         if not selected:
             raise ValueError(f"{label} has no nodes after filtering")
-        validate_nodes(selected, label, set(), allow_dialer=True)
-        for node in selected:
+        validate_nodes(list(selected.values()), label, set(), allow_dialer=True)
+        for node in selected.values():
             if node["name"] in nodes and node != nodes[node["name"]]:
                 raise ValueError(f"{label} has a conflicting node name")
             nodes.setdefault(node["name"], node)
-        members[name] = [node["name"] for node in selected]
+        members[name] = list(selected)
     return list(nodes.values()), members
 
 

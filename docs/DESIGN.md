@@ -70,7 +70,6 @@ ssh_private_key: |
 cluster:
   entry_port_base: 20000
   exit_port: 443
-  entry_override_base_domain: example.com
   entries:
     - {name: sg, ip: 1.2.3.4}
     - {name: jp, ip: 2.3.4.5}
@@ -107,8 +106,6 @@ Rules:
 - Node names are stable identities. Changing a node name creates a different node identity.
 - First phase supports a global SSH key only.
 - First phase supports all entries connected to all exits.
-- `cluster.entry_override_base_domain` is optional. When set, at least one entry is required.
-- It is a base domain only, without a scheme, path, wildcard, or trailing dot.
 - A Reef cluster requires at least one exit; entries are optional. With
   upstream subscriptions or extension nodes, both entries and exits may be omitted
   for subscription-only use. `secret` is still required to derive private
@@ -130,7 +127,6 @@ Reef derives:
 - exits: the ordered `cluster.exits` list
 - relay routes: every entry paired with every exit
 - direct routes: every exit
-- entry override hosts: `<entry-name>.<cluster.entry_override_base_domain>` when the base domain is set
 
 For `M` entries and `N` exits:
 
@@ -162,18 +158,6 @@ jp -> uk
 us direct
 uk direct
 ```
-
-When `cluster.entry_override_base_domain: example.com`, the same entries also derive:
-
-```text
-sg.example.com
-jp.example.com
-```
-
-Generated Mihomo and Quantumult X subscriptions route each derived host only to
-relay routes for the matching entry. They do not fall back to other entries or
-direct exit routes. On the matching entry node, the destination address is
-overridden to `127.0.0.1`; the original destination port is preserved.
 
 ### Ports
 
@@ -343,7 +327,10 @@ This first version accepts:
 
 - `proxies`: a list of ordinary Mihomo proxy mappings.
 - `proxy-providers`: named `http` or `inline` collections. HTTP providers use
-  `url`; inline providers use `payload`. `filter` and `exclude-filter` match
+  either the native single `url` or Reef's nonempty `upstreams` list of
+  `{name, url}` mappings; inline providers use `payload`. Each named upstream
+  adds `name | ` to its nodes. Names must be nonempty and representable in both
+  clients. `filter` and `exclude-filter` match
   names using regular expressions; `exclude-type` lists protocol types separated
   by `|`. `override.additional-prefix` and `override.additional-suffix` can
   disambiguate node names. `override.dialer-proxy` applies the same intermediate
@@ -354,6 +341,32 @@ This first version accepts:
   `include-all-proxies`, and `include-all-providers` selectors are also accepted.
   Custom groups must contain `PROXY`, which is the existing templates' target.
   With no custom groups, the existing `PROXY` and `AUTO` defaults remain.
+
+For example, each collection explicitly lists its upstream subscriptions:
+
+```yaml
+proxy-providers:
+  xq:
+    type: http
+    upstreams:
+      - &xq {name: xq, url: "https://xq.example.com/private-clash-url"}
+      - &xq2 {name: xq2, url: "https://xq2.example.com/private-clash-url"}
+  lx:
+    type: http
+    upstreams:
+      - &lx {name: lx, url: "https://lx.example.com/private-clash-url"}
+  all:
+    type: http
+    upstreams: [*xq, *xq2, *lx]
+```
+
+`all` is an ordinary collection name, with no implicit membership. YAML aliases
+are optional; repeating the same `{name, url}` mappings has the same behavior.
+Filters run against original node names, before the upstream name prefix and
+then `override.additional-prefix` / `additional-suffix` are applied. Reusing
+the same upstream name preserves node identities across collections; different
+subscriptions with colliding node names should use different upstream names.
+Repeated identical nodes within a collection are included once.
 
 Reef resolves collections once per generation, filters before combining them,
 and embeds the resulting nodes and expanded group memberships in every output.
@@ -372,7 +385,6 @@ left empty fails generation. `select` maps to `static`, and `url-test` to
 `url-latency-benchmark`. `PROXY` maps to the existing QX policy `Reef`. Latency
 groups support `url`, `interval`, `timeout` (up to 5000 ms), `tolerance`, and
 `lazy`; they must use one common probe URL and timeout for QX's general settings.
-With custom groups, managed entry policies also use this common probe.
 These QX restrictions are checked only when generating QX; the Mihomo preview
 allows independent probe settings and latency groups containing other groups.
 Other provider/group options, including provider health checks and file
@@ -390,18 +402,19 @@ client -> RELAY's selected node -> PROXY's selected exit -> destination
 ```
 
 This follows [Mihomo's native dialer-proxy semantics](https://wiki.metacubex.one/config/proxies/dialer-proxy/).
-`config.mihomo.example.yaml` is a complete two-exit example with placeholder credentials.
+`config.mihomo.example.yaml` is a complete three-exit example with placeholder credentials.
 
 Use `proxy-providers` for filtered subscription collections or inline nodes,
-`RELAY` for intermediate selection, and `PROXY` for exit selection. These names
-have no implicit chaining behavior: only the native `dialer-proxy` field creates
-the connection. Inline and HTTP exit collections can both use
-`override.dialer-proxy: RELAY`. The generator applies overrides to the filtered
+one `RELAY-<exit>` group per exit for intermediate selection, and `PROXY` for
+exit selection. These names have no implicit chaining behavior: only the native
+`dialer-proxy` field creates the connection. Inline and HTTP exit collections can
+also use `override.dialer-proxy` to share one defined relay group. The generator applies overrides to the filtered
 snapshot and preserves the resulting `dialer-proxy` fields in both Mihomo outputs.
 
 Chains require explicit `proxy-groups` including `PROXY`. In the supplied example,
-`PROXY` contains only MEGABOX and sg1, and `RELAY` contains only subscription nodes.
-Do not use `include-all` for these two groups: it can create a cycle or offer an
+`PROXY` contains only MEGABOX, sg1, and sg2. Each relay selector chooses from
+`xq`, `lx`, and `all`, ordinary `url-test` groups using their matching collections.
+Do not use `include-all` for these groups: it can create a cycle or offer an
 unintended exit. A relay can be a concrete node, a manual group, or a `url-test`
 group. Automatic tests of intermediate nodes measure their own connections,
 not every possible intermediate/exit combination. Both node and group references
@@ -409,15 +422,18 @@ are checked together for missing targets and cycles, including candidates that
 are not selected initially. There is no implicit direct fallback.
 
 When different exits need different intermediates, give each exit its own
-`dialer-proxy` group, such as `RELAY-MEGABOX` and `RELAY-sg1`, instead of sharing
-the provider override. Each group keeps its own manual choice, so switching
+`dialer-proxy` group, such as `RELAY-MEGABOX`, `RELAY-sg1`, and `RELAY-sg2`,
+instead of sharing the provider override. Each group keeps its own manual choice, so switching
 `PROXY` also switches to the corresponding intermediate without resetting it.
+The automatic groups remain visible so a client can pin a particular member.
+Exits choosing the same automatic group share that group's current node;
+`all` keeps its own selection across its explicitly combined membership.
 
-The initial example uses TCP exits (MEGABOX VLESS Reality and sg1 Trojan).
+The example uses TCP exits (MEGABOX VLESS Reality and sg1/sg2 Trojan).
 Actual protocol, destination-port, and UDP support still depend on both services;
 successful configuration validation is not an end-to-end connectivity test.
 Existing Reef-managed entry ports already forward through a fixed exit and are
-not used as ordinary intermediates in this example. A standalone sg1 definition
+not used as ordinary intermediates in this example. A standalone exit definition
 must match the deployed endpoint; if its server credentials change, update it.
 
 Run `just urls mihomo` for a local preview, or `just web-deploy` to publish the
@@ -463,9 +479,7 @@ The two general-purpose groups are:
 
 Quantumult X has the same structure with the existing `Reef` manual policy and
 an `AUTO` latency policy; only QX-compatible nodes appear in either.
-Per-exit and `UPSTREAM` groups are replaced by these two groups. Optional
-`entry-<name>` policies in the client and QX profiles remain separate, contain
-only that entry's relay routes, and retain their higher-priority domain rules. Client rules still send the AI
+Per-exit and `UPSTREAM` groups are replaced by these two groups. Client rules still send the AI
 and proxy rule sets to the main selector, China destinations directly, and
 remaining traffic to the selector. Linux server rules send all traffic to it.
 

@@ -10,7 +10,6 @@ secret: "replace_with_64_lowercase_hex_chars"
 cluster:
   entry_port_base: 20000
   exit_port: 443
-  entry_override_base_domain: example.com
   entries:
     - {name: sg, ip: 192.0.2.10}
     - {name: jp, ip: 192.0.2.11}
@@ -76,6 +75,8 @@ proxy-groups:
 # First-version provider/group options are listed in docs/DESIGN.md.
 # For independently selectable intermediate and exit nodes, see
 # config.mihomo.example.yaml and generate a preview with `just urls mihomo`.
+# HTTP collections can replace url with upstreams: [{name: source, url: ...}].
+# Each source name adds a "source | " prefix to its nodes.
 # Existing subscriptions.upstream_urls / subscriptions.nodes still work, but
 # cannot be mixed with the native keys above.
 

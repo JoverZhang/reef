@@ -51,7 +51,6 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
     reserved_names = (
         {"PROXY", "Reef", "AUTO", "DIRECT", "REJECT", "GLOBAL", "direct", "reject"}
         | {pair["name"] for pair in pairs + qx_pairs}
-        | {f"entry-{node['id']}" for node in context["entries"]}
         | {group["name"] for group in context.get("proxy_groups", [])}
     )
     for index, proxy in enumerate(upstream, start=1):
@@ -65,16 +64,9 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
         )
     proxy_names = [node["name"] for node in pairs + upstream]
     qx_proxy_names = [node["name"] for node in qx_pairs + qx_upstream]
-    entry_groups = _entry_groups(context["entries"], pairs)
-    qx_entry_groups = _entry_groups(context["entries"], qx_pairs)
     groups, policies, probe_url, probe_timeout = _custom_groups(context, pairs, qx_pairs)
-    entry_override_rules = _entry_override_rules(entry_groups)
-    qx_entry_override_rules = _qx_entry_override_rules(qx_entry_groups)
-    entry_direct_rules = [
-        f"IP-CIDR,{server}/32,DIRECT,no-resolve"
-        for server in sorted({pair["server_host"] for pair in pairs})
-    ]
-    qx_entry_direct_rules = [
+    direct_rules = _direct_rules(pairs)
+    qx_direct_rules = [
         f"ip-cidr, {server}/32, direct"
         for server in sorted({pair["server_host"] for pair in qx_pairs})
     ]
@@ -91,16 +83,12 @@ def render(context: dict[str, Any]) -> list[dict[str, str]]:
                 "qx_upstream": qx_upstream,
                 "proxy_names": proxy_names,
                 "qx_proxy_names": qx_proxy_names,
-                "entry_groups": entry_groups,
-                "qx_entry_groups": qx_entry_groups,
                 "groups": groups,
                 "qx_policies": policies,
                 "probe_url": probe_url,
                 "probe_timeout": probe_timeout,
-                "entry_override_rules": entry_override_rules,
-                "qx_entry_override_rules": qx_entry_override_rules,
-                "entry_direct_rules": entry_direct_rules,
-                "qx_entry_direct_rules": qx_entry_direct_rules,
+                "direct_rules": direct_rules,
+                "qx_direct_rules": qx_direct_rules,
                 "mixed_port": int(profile.get("mixed_port", 7890)),
             }
         )
@@ -123,24 +111,14 @@ def validate(profiles: list[dict[str, str]], context: dict[str, Any]) -> None:
     upstream = context["upstream_proxies"]
     qx_upstream = context["qx_upstream"]
     proxy_names = [node["name"] for node in pairs + upstream]
-    entry_groups = _entry_groups(context["entries"], pairs)
-    qx_entry_groups = _entry_groups(context["entries"], qx_pairs)
     groups, policies, probe_url, probe_timeout = _custom_groups(context, pairs, qx_pairs)
 
     client = yaml.safe_load(by_id["client"]["body"])
     _check_mihomo_proxy_shape(client, [pair["name"] for pair in pairs], upstream)
     _check_groups(client, proxy_names, "client.yaml", groups)
-    _check_entry_groups(client, entry_groups, "client.yaml")
-    expected_entry_rules = _entry_override_rules(entry_groups)
     expected_direct_rules = _direct_rules(pairs)
     _expect(
-        client["rules"][: len(expected_entry_rules)],
-        expected_entry_rules,
-        "client entry override rules mismatch",
-    )
-    direct_start = len(expected_entry_rules)
-    _expect(
-        client["rules"][direct_start : direct_start + len(expected_direct_rules)],
+        client["rules"][: len(expected_direct_rules)],
         expected_direct_rules,
         "client direct rules mismatch",
     )
@@ -154,7 +132,6 @@ def validate(profiles: list[dict[str, str]], context: dict[str, Any]) -> None:
     _check_quantumult_x(
         by_id["quantumult-x"]["body"],
         qx_pairs,
-        qx_entry_groups,
         qx_upstream,
         policies,
     )
@@ -166,9 +143,6 @@ def validate(profiles: list[dict[str, str]], context: dict[str, Any]) -> None:
 
 def _custom_groups(context: dict, pairs: list[dict], qx_pairs: list[dict]) -> tuple:
     specs = context.get("proxy_groups", [])
-    entry_names = {f"entry-{node['id']}" for node in context["entries"]}
-    if any(group["name"] in entry_names for group in specs):
-        raise ValueError("proxy-group name conflicts with a managed entry policy")
     groups = resolve_groups(
         specs, context.get("provider_members", {}),
         [node["name"] for node in pairs] + context.get("top_proxy_names", []),
@@ -268,9 +242,6 @@ def _pair(
         "exit_id": route["exit"]["id"],
         "entry_name": route["entry"]["id"] if route["entry"] else None,
         "entry_id": route["entry"]["id"] if route["entry"] else None,
-        "entry_override_host": (
-            route["entry"]["entry_override_host"] if route["entry"] else None
-        ),
         "kind": route["kind"],
         "expected_exit_ip": route["exit"]["ip"],
         "server_host": connect["host"],
@@ -280,28 +251,6 @@ def _pair(
         "cert_fingerprint_hex": fingerprint.replace(":", ""),
         "sni": server["ip"],
     }
-
-
-def _entry_groups(entries: list[dict[str, Any]], pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups = []
-    for entry in entries:
-        host = entry.get("entry_override_host")
-        if not host:
-            continue
-        groups.append(
-            {
-                "name": f"entry-{entry['id']}",
-                "entry_name": entry["id"],
-                "entry_id": entry["id"],
-                "host": host,
-                "proxies": [
-                    pair["name"]
-                    for pair in pairs
-                    if pair["kind"] == "relay" and pair["entry_id"] == entry["id"]
-                ],
-            }
-        )
-    return groups
 
 
 def _expect(value: object, expected: object, message: str) -> None:
@@ -318,14 +267,6 @@ def _direct_rules(pairs: list[dict[str, Any]]) -> list[str]:
         f"IP-CIDR,{server}/32,DIRECT,no-resolve"
         for server in sorted({pair["server_host"] for pair in pairs})
     ]
-
-
-def _entry_override_rules(entry_groups: list[dict[str, Any]]) -> list[str]:
-    return [f"DOMAIN,{group['host']},{group['name']}" for group in entry_groups]
-
-
-def _qx_entry_override_rules(entry_groups: list[dict[str, Any]]) -> list[str]:
-    return [f"host, {group['host']}, {group['name']}" for group in entry_groups]
 
 
 def _check_mihomo_proxy_shape(
@@ -352,7 +293,7 @@ def _check_groups(
     expected: list[dict] | None = None,
 ) -> None:
     if expected:
-        _expect(doc["proxy-groups"][:len(expected)], expected, f"{label} custom groups mismatch")
+        _expect(doc["proxy-groups"], expected, f"{label} custom groups mismatch")
         return
     groups = _group_by_name(doc)
     _expect(groups["PROXY"]["type"], "select", f"{label} PROXY must be manual")
@@ -361,27 +302,9 @@ def _check_groups(
     _expect(groups["AUTO"]["proxies"], proxy_names, f"{label} AUTO choices mismatch")
 
 
-def _check_entry_groups(
-    doc: dict[str, Any],
-    entry_groups: list[dict[str, Any]],
-    label: str,
-) -> None:
-    groups = _group_by_name(doc)
-    for entry_group in entry_groups:
-        group = groups.get(entry_group["name"])
-        if not group:
-            raise ValueError(f"{label} missing {entry_group['name']} group")
-        _expect(
-            group["proxies"],
-            entry_group["proxies"],
-            f"{label} {entry_group['name']} routes mismatch",
-        )
-
-
 def _check_quantumult_x(
     body: str,
     pairs: list[dict[str, Any]],
-    entry_groups: list[dict[str, Any]],
     upstream: list[dict[str, str]],
     policies: list[str] | None = None,
 ) -> None:
@@ -422,10 +345,8 @@ def _check_quantumult_x(
 
     policy_start = lines.index("[policy]") + 1
     if policies:
-        _expect(lines[policy_start:policy_start + len(policies)], policies,
+        _expect(lines[policy_start:lines.index("[filter_remote]")], policies,
                 "quantumult-x custom policies mismatch")
-        policy_lines = lines[policy_start + len(policies):lines.index("[filter_remote]")]
-        _expect(len(policy_lines), len(entry_groups), "quantumult-x entry policy count mismatch")
     else:
         top_policy = next((line for line in lines if line.startswith("static=Reef,")), "")
         proxy_names = [node["name"] for node in pairs + upstream]
@@ -438,7 +359,7 @@ def _check_quantumult_x(
         policy_lines = [line for line in lines if line.startswith("url-latency-benchmark=")]
         _expect(
             len(policy_lines),
-            1 + len(entry_groups),
+            1,
             "quantumult-x policy count mismatch",
         )
         auto_policy = next(
@@ -449,28 +370,6 @@ def _check_quantumult_x(
             proxy_names,
             "quantumult-x AUTO choices mismatch",
         )
-
-    for entry_group in entry_groups:
-        matching = [
-            line
-            for line in policy_lines
-            if line.startswith(f"url-latency-benchmark={entry_group['name']},")
-        ]
-        if len(matching) != 1:
-            raise ValueError(f"quantumult-x missing policy for {entry_group['name']}")
-        for proxy_name in entry_group["proxies"]:
-            if proxy_name not in matching[0]:
-                raise ValueError(
-                    f"quantumult-x {entry_group['name']} policy missing {proxy_name}"
-                )
-
-    entry_rules = _qx_entry_override_rules(entry_groups)
-    filter_start = lines.index("[filter_local]") + 1
-    _expect(
-        lines[filter_start : filter_start + len(entry_rules)],
-        entry_rules,
-        "quantumult-x entry override rules mismatch",
-    )
 
     if "final, Reef" not in lines:
         raise ValueError("quantumult-x final rule must use Reef policy")

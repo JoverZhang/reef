@@ -67,7 +67,9 @@ The first-phase product shape:
 configuration schema. `subscriptions/mihomo.py` owns native proxy/provider/group
 validation, fetching and filtering provider snapshots, resolving group references,
 validating proxy/group relay dependencies, and converting supported selection
-policies to Quantumult X. All available profiles
+policies to Quantumult X. HTTP collections can combine named upstreams; shared
+URLs use one fetch per generation and the names prefix the selected nodes.
+All available profiles
 receive the same node snapshot; HTTP provider URLs are consumed only during
 generation. `subscriptions/extension.py` validates the legacy
 `subscriptions.nodes` list using Reef's client-independent VLESS schema, and normalizes its protocol,

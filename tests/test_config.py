@@ -101,7 +101,7 @@ class ConfigTests(unittest.TestCase):
             (("cluster", "entry_port_base"), True),
             (("cluster", "exit_port"), "443"),
             (("cluster", "exit_port"), 65536),
-            (("cluster", "entry_override_base_domain"), 123),
+            (("cluster", "entry_override_base_domain"), "example.test"),
             (("cluster", "private-credential"), True),
             (("subscriptions", "upstream_urls"), "private-credential"),
             (("subscriptions", "nodes"), None),

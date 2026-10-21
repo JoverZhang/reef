@@ -134,8 +134,6 @@ class SubscriptionOnlyTests(unittest.TestCase):
         ):
             with self.subTest(values=list(values)), self.assertRaisesRegex(ValueError, "cluster.exits"):
                 core.parse_config(values)
-        with self.assertRaisesRegex(ValueError, "requires at least one entry"):
-            self.model(cluster={"entry_override_base_domain": "example.com"})
         with self.assertRaisesRegex(ValueError, "secret"):
             core.parse_config({"subscriptions": {"upstream_urls": [self.url]}})
 

@@ -90,15 +90,6 @@ proxy-groups:
     tolerance: 50
     lazy: true
 {%- endif %}
-{%- for group in entry_groups %}
-  - name: {{ group.name }}
-    type: url-test
-    proxies: [{% for proxy in group.proxies %}{{ proxy }}{% if not loop.last %}, {% endif %}{% endfor %}]
-    url: {{ (probe_url if groups else 'https://www.gstatic.com/generate_204') | tojson }}
-    interval: 300
-    timeout: {{ probe_timeout if groups else 5000 }}
-    lazy: true
-{%- endfor %}
 
 rule-providers:
   bm_openai:
@@ -137,10 +128,7 @@ rule-providers:
     interval: 86400
 
 rules:
-{%- for rule in entry_override_rules %}
-  - {{ rule }}
-{%- endfor %}
-{%- for rule in entry_direct_rules %}
+{%- for rule in direct_rules %}
   - {{ rule }}
 {%- endfor %}
 

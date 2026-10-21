@@ -27,7 +27,6 @@ CONFIG = {
     "cluster": {
         "entries": [{"name": "sg", "ip": "192.0.2.10"}, {"name": "jp", "ip": "192.0.2.11"}],
         "exits": [{"name": "us", "ip": "192.0.2.20"}, {"name": "uk", "ip": "192.0.2.21"}],
-        "entry_override_base_domain": "example.test",
     },
 }
 
@@ -94,8 +93,8 @@ class SubscriptionTests(unittest.TestCase):
             self.assertEqual(groups[1]["name"], "AUTO")
             self.assertEqual(groups[1]["type"], "url-test")
             self.assertEqual(groups[1]["proxies"], names)
-            # Entry overrides must remain confined to the matching Reef entry.
-            self.assertEqual(groups[2:], original_groups[2:])
+            self.assertEqual(len(groups), 2)
+            self.assertEqual(len(original_groups), 2)
             self.assertEqual(after, before)
         body = imported["quantumult-x"]
         self.assertIn("tag=🇸🇬 HTTP: [TLS] #1", body)
@@ -172,7 +171,7 @@ class SubscriptionTests(unittest.TestCase):
         self.assertEqual(yaml.safe_load(profiles["client"])["proxies"][-2:], unsupported)
 
     def test_names_and_values_cannot_break_local_policies(self):
-        for name in ("PROXY", "AUTO", "Reef", "entry-sg", "sg-us"):
+        for name in ("PROXY", "AUTO", "Reef", "sg-us"):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "conflicts"):
                 self.render_profiles([{**self.proxies[0], "name": name}])
         for key, value in (

@@ -116,6 +116,92 @@ class MihomoInputTests(unittest.TestCase):
         self.assertEqual([p["token"] for p in profiles], [p["token"] for p in top_level])
         self.assertEqual(yaml.safe_load(profiles[0]["body"])["proxies"], [LOCAL])
 
+    def named_collections(self):
+        sources = [{"name": name, "url": URL + f"-{name}"} for name in ("xq", "xq2", "lx")]
+        return {
+            "secret": SECRET,
+            "proxy-providers": {
+                "xq": {"type": "http", "upstreams": sources[:2], "filter": "^Singapore"},
+                "lx": {"type": "http", "upstreams": sources[2:], "filter": "^Singapore"},
+                "all": {"type": "http", "upstreams": sources + sources[:1], "filter": "^Singapore"},
+            },
+            "proxy-groups": [
+                {"name": "PROXY", "type": "select", "proxies": ["xq", "lx", "all"]},
+                *[{"name": name, "type": "url-test", "use": [name]} for name in ("xq", "lx", "all")],
+            ],
+        }
+
+    def test_named_upstreams_combine_deduplicate_and_preserve_names_in_both_clients(self):
+        config = self.named_collections()
+        with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()) as fetch:
+            profiles = self.generate(config)
+        self.assertEqual(fetch.call_count, 3)
+        names = [f"{name} | Singapore 01" for name in ("xq", "xq2", "lx")]
+        for profile in profiles[:2]:
+            doc = yaml.safe_load(profile["body"])
+            self.assertEqual([node["name"] for node in doc["proxies"]], names)
+            groups = {g["name"]: g for g in doc["proxy-groups"]}
+            self.assertEqual(groups["xq"]["proxies"], names[:2])
+            self.assertEqual(groups["lx"]["proxies"], names[2:])
+            self.assertEqual(groups["all"]["proxies"], names)
+            self.assertNotIn("proxy-providers", doc)
+        for name in names:
+            self.assertIn(f"tag={name}", profiles[2]["body"])
+        for profile in profiles:
+            self.assertNotIn("private-", profile["body"])
+        # Membership is explicit, even for a collection named all.
+        config["proxy-providers"]["all"]["upstreams"] = config["proxy-providers"]["lx"]["upstreams"]
+        with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
+            doc = yaml.safe_load(self.generate(config)[0]["body"])
+        self.assertEqual(doc["proxy-groups"][-1]["proxies"], names[2:])
+
+    def test_three_exits_choose_named_automatic_collections_independently(self):
+        config = self.named_collections()
+        exits = [
+            {**LOCAL, "name": name, "dialer-proxy": f"RELAY-{key}"}
+            for name, key in (("US | MEGABOX", "MEGABOX"), ("SG 1 | Alibaba", "sg1"), ("SG 2 | Alibaba", "sg2"))
+        ]
+        config["proxy-providers"]["exits"] = {"type": "inline", "payload": exits}
+        config["proxy-groups"][0] = {"name": "PROXY", "type": "select", "use": ["exits"]}
+        config["proxy-groups"].extend(
+            {"name": node["dialer-proxy"], "type": "select", "proxies": ["all", "xq", "lx"]}
+            for node in exits
+        )
+        with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()) as fetch:
+            profiles = self.generate(config)
+        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual(len(profiles), 2)
+        for profile in profiles:
+            doc = yaml.safe_load(profile["body"])
+            self.assertEqual(doc["proxy-groups"][0]["proxies"], [n["name"] for n in exits])
+            self.assertEqual(doc["proxies"][-3:], exits)
+            self.assertEqual(len(doc["proxy-groups"]), 7)
+            self.assertTrue(all(g["proxies"] == ["all", "xq", "lx"] for g in doc["proxy-groups"][-3:]))
+
+    def test_named_upstream_failure_does_not_replace_artifacts_or_echo_urls(self):
+        config = self.named_collections()
+        with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
+            self.generate(config)
+        before = self.artifacts()
+        with patch.object(upstream, "urlopen", side_effect=[self.response(), URLError(URL)]):
+            with self.assertRaisesRegex(ValueError, r"^upstream URL #2 \(proxy-provider #1\) fetch failed$"):
+                self.generate(config)
+        self.assertEqual(self.artifacts(), before)
+
+    def test_named_sources_reject_conflicts_and_apply_filters_before_prefixes(self):
+        config = self.named_collections()
+        config["proxy-providers"] = {"a": {
+            "type": "http", "upstreams": [{"name": "feed", "url": URL}, {"name": "feed", "url": URL + "2"}],
+            "filter": "^Singapore", "override": {"additional-prefix": "[", "additional-suffix": "]"},
+        }}
+        config["proxy-groups"] = [{"name": "PROXY", "type": "select", "use": ["a"]}]
+        with patch.object(upstream, "urlopen", side_effect=lambda *a, **kw: self.response()):
+            doc = yaml.safe_load(self.generate(config)[0]["body"])
+        self.assertEqual([n["name"] for n in doc["proxies"]], ["[feed | Singapore 01]"])
+        with patch.object(upstream, "urlopen", side_effect=[self.response(), self.response([{**NODES[0], "port": 8443}])]):
+            with self.assertRaisesRegex(ValueError, "conflicting node name"):
+                self.generate(config)
+
     def test_provider_prefixes_type_exclusion_and_native_include_all(self):
         self.config["proxy-providers"] = {
             "a": {"type": "inline", "payload": [LOCAL], "override": {"additional-prefix": "A-"}},
@@ -140,6 +226,19 @@ class MihomoInputTests(unittest.TestCase):
             {"proxies": [{**LOCAL, "dialer-proxy": ""}]},
             {"proxy-providers": {"a": {"type": "inline", "payload": [LOCAL], "override": {"dialer-proxy": ""}}}},
         ]
+        for spec in (
+            {"type": "http", "upstreams": []},
+            {"type": "http", "upstreams": "private-value"},
+            {"type": "http", "upstreams": ["private-value"]},
+            {"type": "http", "url": URL, "upstreams": [{"name": "source", "url": URL}]},
+            {"type": "inline", "payload": [LOCAL], "upstreams": [{"name": "source", "url": URL}]},
+            *[{"type": "http", "upstreams": [source]} for source in (
+                {"url": URL}, {"name": "source"}, {"name": "", "url": URL},
+                {"name": "private,invalid", "url": URL}, {"name": "source", "url": "private-url"},
+                {"name": "source", "url": URL, "private-unsupported": True},
+            )],
+        ):
+            cases.append({"proxy-providers": {"private-name": spec}})
         for changes in cases:
             with self.subTest(keys=list(changes)), self.assertRaises(ValueError) as error:
                 core.parse_config({**self.config, **changes})
@@ -200,12 +299,11 @@ class MihomoInputTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.generate({"secret": SECRET, "proxy-providers": providers})
 
-    def test_managed_node_references_keep_qx_names_and_entry_rules(self):
+    def test_managed_node_references_keep_qx_names_without_extra_entry_groups(self):
         document = {
             "secret": SECRET,
             "cluster": {"entries": [{"name": "sg", "ip": "192.0.2.10"}],
-                        "exits": [{"name": "us", "ip": "192.0.2.20"}],
-                        "entry_override_base_domain": "example.test"},
+                        "exits": [{"name": "us", "ip": "192.0.2.20"}]},
         }
         model = core.build_model(core.parse_config(document))
         local = core.subscription_proxy_metadata(model)
@@ -213,15 +311,14 @@ class MihomoInputTests(unittest.TestCase):
         profiles = self.generate(document)
         self.assertEqual(set(yaml.safe_load(profiles[0]["body"])["proxy-groups"][0]["proxies"]), {node["name"] for node in local})
         self.assertIn("static=Reef, sg-us, us-direct", profiles[2]["body"])
-        self.assertIn("host, sg.example.test, entry-sg", profiles[2]["body"])
+        self.assertEqual(len(yaml.safe_load(profiles[0]["body"])["proxy-groups"]), 1)
+        self.assertNotIn("entry-sg", profiles[2]["body"])
         document["proxy-groups"] = [{
             "name": "PROXY", "type": "url-test", "include-all": True,
             "url": "https://probe.example.test/check", "timeout": 3000,
         }]
         profiles = self.generate(document)
-        entry = yaml.safe_load(profiles[0]["body"])["proxy-groups"][1]
-        self.assertEqual(entry["url"], "https://probe.example.test/check")
-        self.assertEqual(entry["timeout"], 3000)
+        self.assertIn("server_check_url=https://probe.example.test/check", profiles[2]["body"])
         self.assertIn("server_check_timeout=3000", profiles[2]["body"])
 
     def test_config_export_preserves_native_fields_without_fetching(self):
