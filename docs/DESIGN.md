@@ -394,6 +394,20 @@ allows independent probe settings and latency groups containing other groups.
 Other provider/group options, including provider health checks and file
 providers, remain unsupported and fail explicitly.
 
+### Proxy DNS Bootstrapping
+
+Both Mihomo profiles resolve proxy hostnames through
+`https://223.5.5.5/dns-query` and `https://doh.pub/dns-query`, independently of the
+selected proxy and the general destination resolvers. The existing IP-based
+`default-nameserver` resolves DNS server hostnames. It does not serve as a fallback
+for proxy hostname lookups when `proxy-server-nameserver` is configured.
+
+Proxy startup must not require direct access to the general Cloudflare/Google
+DoH resolvers: when those are unreachable, domain-based upstream nodes would all
+fail while IP-based exit nodes still connect. Keep proxy hostname resolution
+separate from application destination DNS and verify this distinction with a
+native Mihomo test under simulated resolver failure.
+
 ### Mihomo Client-side Relay
 
 The first relay milestone publishes Mihomo profiles with independently selectable
