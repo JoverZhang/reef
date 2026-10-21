@@ -17,18 +17,24 @@ def load_nodes(
     names = set()
     for source_index, url in enumerate(urls, start=1):
         source = f"upstream URL #{source_index}"
-        try:
-            request = Request(url, headers={"User-Agent": "clash.meta", "Accept": "text/yaml"})
-            with urlopen(request, timeout=20) as response:
-                body = response.read()
-        except (OSError, ValueError, HTTPException):
-            # Network errors can include the private subscription URL.
-            raise ValueError(f"{source} fetch failed") from None
-        nodes.extend(_parse_nodes(body, source, names))
+        fetched = fetch_nodes(url, source)
+        validate_nodes(fetched, source, names)
+        nodes.extend(fetched)
     if extend_proxies:
-        validate_nodes(extend_proxies, "subscription extension", names)
+        validate_nodes(extend_proxies, "subscription extension", names, allow_dialer=True)
         nodes.extend(extend_proxies)
     return nodes
+
+
+def fetch_nodes(url: str, source: str) -> list[dict[str, Any]]:
+    try:
+        request = Request(url, headers={"User-Agent": "clash.meta", "Accept": "text/yaml"})
+        with urlopen(request, timeout=30) as response:
+            body = response.read()
+    except (OSError, ValueError, HTTPException):
+        # Network errors can include the private subscription URL.
+        raise ValueError(f"{source} fetch failed") from None
+    return _parse_nodes(body, source, set())
 
 
 def _parse_nodes(body: str | bytes, source: str, names: set[str]) -> list[dict[str, Any]]:
@@ -46,7 +52,9 @@ def _parse_nodes(body: str | bytes, source: str, names: set[str]) -> list[dict[s
     return proxies
 
 
-def validate_nodes(proxies: list[dict[str, Any]], source: str, names: set[str]) -> None:
+def validate_nodes(
+    proxies: list[dict[str, Any]], source: str, names: set[str], *, allow_dialer: bool = False,
+) -> None:
     for index, proxy in enumerate(proxies, start=1):
         label = f"{source} node {index}"
         if not isinstance(proxy, dict):
@@ -61,11 +69,19 @@ def validate_nodes(proxies: list[dict[str, Any]], source: str, names: set[str]) 
         if proxy["name"] in names:
             raise ValueError(f"{label} has a duplicate name")
         names.add(proxy["name"])
-        if proxy.get("dialer-proxy"):
-            raise ValueError(f"{label} cannot depend on an upstream proxy or policy")
+        if "dialer-proxy" in proxy:
+            if not allow_dialer:
+                raise ValueError(f"{label} cannot depend on an upstream proxy or policy")
+            dialer = proxy["dialer-proxy"]
+            if not isinstance(dialer, str) or not dialer.strip() or any(ord(c) < 32 for c in dialer):
+                raise ValueError(f"{label} must have a valid dialer-proxy name")
 
 
 def quantumult_x_nodes(proxies: list[dict[str, Any]]) -> list[dict[str, str]]:
+    if any("dialer-proxy" in proxy for proxy in proxies):
+        raise ValueError(
+            "Quantumult X relay conversion is not supported; use a Mihomo subscription"
+        )
     compatible = [
         proxy for index, proxy in enumerate(proxies, start=1)
         if _qx_supported(proxy, index)

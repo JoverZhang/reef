@@ -73,6 +73,11 @@ proxies: []
 {%- endif %}
 
 proxy-groups:
+{% if groups -%}
+{%- for group in groups %}
+  - {{ group | tojson }}
+{%- endfor %}
+{% else %}
   - name: PROXY
     type: select
     proxies: {{ (["AUTO"] + proxy_names) | tojson }}
@@ -84,13 +89,14 @@ proxy-groups:
     timeout: 5000
     tolerance: 50
     lazy: true
+{%- endif %}
 {%- for group in entry_groups %}
   - name: {{ group.name }}
     type: url-test
     proxies: [{% for proxy in group.proxies %}{{ proxy }}{% if not loop.last %}, {% endif %}{% endfor %}]
-    url: https://www.gstatic.com/generate_204
+    url: {{ (probe_url if groups else 'https://www.gstatic.com/generate_204') | tojson }}
     interval: 300
-    timeout: 5000
+    timeout: {{ probe_timeout if groups else 5000 }}
     lazy: true
 {%- endfor %}
 

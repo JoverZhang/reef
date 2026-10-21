@@ -19,6 +19,7 @@ The first-phase product shape:
 ├── AGENTS.md
 ├── justfile
 ├── config.example.yaml
+├── config.mihomo.example.yaml
 ├── ansible/
 │   ├── apply.yml
 │   ├── delete.yml
@@ -35,6 +36,7 @@ The first-phase product shape:
 ├── subscriptions/
 │   ├── profiles.yaml
 │   ├── extension.py
+│   ├── mihomo.py
 │   ├── render.py
 │   ├── upstream.py
 │   ├── substore.py
@@ -62,7 +64,12 @@ The first-phase product shape:
 
 `subscriptions/` owns the generated subscription profile set and the rendering logic that translates the core route model plus loaded providers into subscription documents.
 `reef/core.py` reads the root `config.yaml` and validates the shared local/CI
-configuration schema. `subscriptions/extension.py` validates the
+configuration schema. `subscriptions/mihomo.py` owns native proxy/provider/group
+validation, fetching and filtering provider snapshots, resolving group references,
+validating proxy/group relay dependencies, and converting supported selection
+policies to Quantumult X. All available profiles
+receive the same node snapshot; HTTP provider URLs are consumed only during
+generation. `subscriptions/extension.py` validates the legacy
 `subscriptions.nodes` list using Reef's client-independent VLESS schema, and normalizes its protocol,
 transport, and TLS settings into the existing converter input. The normalized
 nodes are also the Mihomo output. `subscriptions/upstream.py` fetches optional
@@ -73,8 +80,13 @@ validates the supported Quantumult X conversion inputs.
 receives only node data through stdin and never inherits Reef secrets or prints
 converter diagnostics. The subscription templates own all static client
 configuration. A generation uses
-one merged upstream snapshot for all three profiles and the Web artifacts.
-With upstream URLs or extension nodes and no cluster nodes, the core model has no
+one merged upstream snapshot for the profiles and the Web artifacts.
+The local `just urls mihomo` preview uses the same renderer with only the two
+Mihomo profiles, writes to `build/subscriptions/mihomo/`, and bypasses QX
+conversion. With chains, normal generation publishes both Mihomo profiles and
+marks the QX URL unavailable (HTTP 503) until QX relay support exists. The generated
+Web module owns response bodies and statuses; the route serves them unchanged.
+With subscription nodes or providers and no cluster nodes, the core model has no
 routes or node secrets; the same subscription and Web rendering path works without deployment.
 `config.yaml` is the only private configuration input and is ignored by git.
 `config.example.yaml` documents its shape. The website workflow restores it from

@@ -77,7 +77,11 @@ jobs:
                   for item in value:
                       mask_values(item)
           mask_values(document)
-          for value in config.upstream_urls:
+          upstream_urls = config.upstream_urls + [
+              provider["url"] for provider in config.proxy_providers.values()
+              if provider["type"] == "http"
+          ]
+          for value in upstream_urls:
               url = urlsplit(value)
               masks.update(unquote(part) for part in url.path.split("/") if part)
               masks.update(v for _, v in parse_qsl(url.query))

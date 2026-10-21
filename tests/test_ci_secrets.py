@@ -87,6 +87,20 @@ class CISecretTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(core.load_config(self.root / "config.yaml"), document)
 
+    def test_workflow_masks_native_provider_credentials_and_round_trips_config(self):
+        document = {
+            "secret": SECRET,
+            "proxy-providers": {"upstream": {"type": "http", "url": URL, "filter": "新加坡|美国"}},
+            "proxy-groups": [{"name": "PROXY", "type": "select", "use": ["upstream"]}],
+        }
+        result = self.run_step("Write configuration", CONFIG_YAML=core.dump_config(document))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertTrue(all(line.startswith("::add-mask::") for line in lines))
+        for value in (URL, "private-password", "private-path", "private-query"):
+            self.assertIn("::add-mask::" + value, lines)
+        self.assertEqual(core.load_config(self.root / "config.yaml"), document)
+
     def test_mask_commands_escape_newlines_in_decoded_url_tokens(self):
         document = {"secret": SECRET, "subscriptions": {"upstream_urls": [
             "https://user:private%0Dpassword@example.test/private%0A::error::injection",
