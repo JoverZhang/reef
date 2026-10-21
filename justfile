@@ -43,6 +43,14 @@ urls: setup
 config-yaml: setup
     {{python}} -m reef.cli.config_yaml
 
+web-deploy: setup
+    #!/usr/bin/env bash
+    set -euo pipefail
+    reef_repo=JoverZhang/reef
+    reef_config_yaml="$({{python}} -m reef.cli.config_yaml)"
+    printf '%s\n' "$reef_config_yaml" | gh secret set CONFIG_YAML --repo "$reef_repo"
+    gh workflow run deploy-website.yml --repo "$reef_repo" --ref master
+
 web-build: setup
     cd web && pnpm install --frozen-lockfile
     cd web && pnpm build
