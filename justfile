@@ -71,5 +71,6 @@ web-dev: setup
     cd web && pnpm dev
 
 test: setup vendor
+    cd web && pnpm install --frozen-lockfile
     {{python}} -m unittest discover -s tests
     {{python}} tests/integration.py
