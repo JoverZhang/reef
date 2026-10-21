@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import yaml
 
+from reef import core
 from subscriptions import substore, upstream
 
 
@@ -24,8 +25,13 @@ class CISecretTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.env = {key: value for key, value in os.environ.items() if not key.startswith("REEF_")}
+        self.env = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith(("REEF_", "TEST_"))
+        }
         self.env["CI"] = "true"
+        self.env["PATH"] = f"{Path(sys.executable).parent}:{self.env.get('PATH', os.defpath)}"
+        self.env["PYTHONPATH"] = str(ROOT)
         workflow = yaml.safe_load((ROOT / ".github/workflows/deploy-website.yml").read_text())
         self.steps = {step["name"]: step for step in workflow["jobs"]["deploy"]["steps"]}
 
@@ -35,39 +41,61 @@ class CISecretTests(unittest.TestCase):
             cwd=self.root, env={**self.env, **env}, text=True, capture_output=True, timeout=10,
         )
 
-    def test_workflow_masks_values_and_url_tokens_and_writes_private_env(self):
-        payload = f"REEF_SECRET='{SECRET}'\n REEF_UPSTREAM_URL_1 = \"{URL}\"\n"
-        result = self.run_step("Write Reef environment", REEF_WEB_ENV=payload)
+    def test_workflow_masks_values_and_url_tokens_and_writes_private_config(self):
+        node = yaml.safe_load((ROOT / "tests/fixtures/extension.yaml").read_text())["nodes"][0]
+        document = {
+            "secret": SECRET,
+            "subscriptions": {"upstream_urls": [URL], "nodes": [node]},
+        }
+        payload = core.dump_config(document)
+        result = self.run_step("Write configuration", CONFIG_YAML=payload)
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
         self.assertTrue(all(line.startswith("::add-mask::") for line in lines))
-        for value in (SECRET, URL, "private-password", "private-path", "private-query"):
+        for value in (SECRET, URL, "private-password", "private-path", "private-query", node["uuid"], node["server"]):
             self.assertIn("::add-mask::" + value, lines)
+        path = self.root / "config.yaml"
+        self.assertEqual(core.load_config(path), document)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(result.stderr, "")
-        self.assertEqual((self.root / ".env").read_text(), payload + "\n")
-        self.assertEqual((self.root / ".env").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.run_step("Remove private build inputs").returncode, 0)
+        self.assertFalse(path.exists())
 
-    def test_workflow_rejects_injected_or_deployment_variables_without_echoing(self):
-        for line in (
-            " REEF_SSH_PRIVATE_KEY_B64 = private-key",
-            "REEF_TEST_MODE=private-value",
-            "TEST_HOST_MAP=private-value",
-            "NODE_OPTIONS=private-value",
-            "::error::private-value",
-            f"REEF_SECRET={SECRET}",
+    def test_workflow_rejects_invalid_and_deployment_configuration_without_echoing(self):
+        valid = core.dump_config({"secret": SECRET, "subscriptions": {"upstream_urls": [URL]}})
+        for payload in (
+            valid + "ssh_private_key: private-key\n",
+            valid + "REEF_TEST_MODE: private-value\n",
+            valid + "TEST_HOST_MAP: private-value\n",
+            valid + "NODE_OPTIONS: private-value\n",
+            valid + "private-value: [broken\n",
+            valid + f"secret: '{SECRET}'\n",
+            "secret: private-value\n",
+            valid.replace("subscriptions:", "subscriptions:\n  private-value: bad"),
+            "",
         ):
-            result = self.run_step("Write Reef environment", REEF_WEB_ENV=f"REEF_SECRET={SECRET}\n{line}")
+            result = self.run_step("Write configuration", CONFIG_YAML=payload)
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("private-", result.stdout + result.stderr)
             self.assertNotIn(SECRET, result.stdout + result.stderr)
-            self.assertFalse((self.root / ".env").exists())
+            self.assertFalse((self.root / "config.yaml").exists())
+
+    def test_workflow_supports_standalone_nodes_without_cluster_or_upstreams(self):
+        nodes = yaml.safe_load((ROOT / "tests/fixtures/extension.yaml").read_text())["nodes"]
+        document = {"secret": SECRET, "subscriptions": {"nodes": nodes}}
+        result = self.run_step("Write configuration", CONFIG_YAML=core.dump_config(document))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(core.load_config(self.root / "config.yaml"), document)
 
     def test_mask_commands_escape_newlines_in_decoded_url_tokens(self):
-        payload = f"REEF_SECRET={SECRET}\nREEF_UPSTREAM_URL_1=https://example.test/private%0A::error::injection\n"
-        result = self.run_step("Write Reef environment", REEF_WEB_ENV=payload)
+        document = {"secret": SECRET, "subscriptions": {"upstream_urls": [
+            "https://user:private%0Dpassword@example.test/private%0A::error::injection",
+        ]}}
+        result = self.run_step("Write configuration", CONFIG_YAML=core.dump_config(document))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(all(line.startswith("::add-mask::") for line in result.stdout.splitlines()))
         self.assertIn("::add-mask::private%0A::error::injection", result.stdout)
+        self.assertIn("::add-mask::private%0Dpassword", result.stdout)
 
     def test_vercel_build_diagnostics_stay_private_on_success_and_failure(self):
         binary = self.root / "vercel"
@@ -81,18 +109,21 @@ class CISecretTests(unittest.TestCase):
             log = self.root / "build/website-build.log"
             self.assertIn("private-generated-password", log.read_text())
             self.assertEqual(log.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(self.run_step("Remove local environment files").returncode, 0)
+            self.assertEqual(self.run_step("Remove private build inputs").returncode, 0)
             self.assertFalse(log.exists())
 
     def test_cli_errors_hide_values_that_python_exception_messages_echo(self):
-        env_file = self.root / "website.env"
-        env_file.write_text(f"REEF_SECRET={SECRET}\nREEF_EXIT_1=us,private-invalid-ip\n")
+        config_file = self.root / "config.yaml"
+        core.write_config({
+            "secret": SECRET,
+            "cluster": {"exits": [{"name": "us", "ip": "private-invalid-ip"}]},
+        }, config_file)
         for module in ("render", "urls"):
             command = [sys.executable, "-m", f"reef.cli.{module}"]
             if module == "render":
                 command.append("web")
             result = subprocess.run(
-                command, cwd=ROOT, env={**self.env, "REEF_ENV_FILE": str(env_file)},
+                command, cwd=ROOT, env={**self.env, "TEST_CONFIG_FILE": str(config_file), "REEF_TEST_MODE": "1"},
                 capture_output=True, text=True, timeout=10,
             )
             self.assertNotEqual(result.returncode, 0)
@@ -109,7 +140,7 @@ class CISecretTests(unittest.TestCase):
         with (
             patch.object(substore, "ROOT", self.root),
             patch.object(substore, "SHA256", hashlib.sha256(content).hexdigest()),
-            patch.dict(os.environ, {"REEF_SECRET": SECRET, "REEF_UPSTREAM_URL_1": URL}),
+            patch.dict(os.environ, {"CONFIG_YAML": core.dump_config({"secret": SECRET, "subscriptions": {"upstream_urls": [URL]}})}),
             patch.object(substore.subprocess, "run", side_effect=failure) as run,
             self.assertRaisesRegex(ValueError, "^Sub-Store conversion failed") as error,
         ):

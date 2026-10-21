@@ -31,9 +31,14 @@ try {
   const output = module.namespace.produce(proxies, "QX");
   const lines = output.split("\n").filter(Boolean).map((line) => {
     const options = line.split(",");
-    // QX's official VLESS TLS/Reality examples use obfs-host for SNI.
-    if (line.startsWith("vless=") && options.includes("obfs=over-tls")) {
-      return options.map((part) => part.replace(/^tls-host=/, "obfs-host=")).join(", ");
+    // QX's VLESS TLS and WSS use obfs-host for SNI. The input validator
+    // ensures any WebSocket Host matches SNI before these are combined.
+    if (line.startsWith("vless=")) {
+      const hasHost = options.some((part) => part.startsWith("obfs-host="));
+      return options.flatMap((part) => {
+        if (!part.startsWith("tls-host=")) return [part];
+        return hasHost ? [] : [part.replace(/^tls-host=/, "obfs-host=")];
+      }).join(", ");
     }
     return options.join(", ");
   });

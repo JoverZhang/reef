@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
@@ -9,6 +8,8 @@ import socket
 import subprocess
 import time
 from pathlib import Path
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,33 +82,32 @@ def write_context() -> tuple[Path, str]:
     shutil.copy(ROOT / "tests" / "Dockerfile.node", ctx / "Dockerfile")
     shutil.copy(ROOT / "tests" / "fixtures" / "echo_ip.py", ctx / "echo_ip.py")
     shutil.copy(key.with_suffix(".pub"), ctx / "id_ed25519.pub")
-    key_b64 = base64.b64encode(key.read_bytes()).decode()
-    return ctx, key_b64
+    return ctx, key.read_text()
 
 
-def write_env(
-    key_b64: str,
+def write_config(
+    private_key: str,
     *,
-    name: str = ".env",
+    name: str = "config.yaml",
     include_uk: bool = True,
 ) -> tuple[Path, Path, Path]:
-    env_path = BUILD / name
-    lines = [
-        "REEF_SECRET=1111111111111111111111111111111111111111111111111111111111111111",
-        f"REEF_SSH_PRIVATE_KEY_B64={key_b64}",
-        "REEF_ENTRY_PORT_BASE=20000",
-        "REEF_EXIT_PORT=443",
-        "REEF_ENTRY_OVERRIDE_BASE_DOMAIN=example.test",
-        "REEF_ENTRY_1=sg,172.28.0.10",
-        "REEF_ENTRY_2=jp,172.28.0.11",
-        "REEF_EXIT_1=us,172.28.0.20",
-    ]
+    config_path = BUILD / name
+    exits = [{"name": "us", "ip": "172.28.0.20"}]
     if include_uk:
-        lines.append("REEF_EXIT_2=uk,172.28.0.21")
-    env_path.write_text(
-        "\n".join(lines) + "\n"
-    )
-    env_path.chmod(0o600)
+        exits.append({"name": "uk", "ip": "172.28.0.21"})
+    document = {
+        "secret": "11" * 32,
+        "ssh_private_key": private_key,
+        "cluster": {
+            "entry_port_base": 20000,
+            "exit_port": 443,
+            "entry_override_base_domain": "example.test",
+            "entries": [{"name": "sg", "ip": "172.28.0.10"}, {"name": "jp", "ip": "172.28.0.11"}],
+            "exits": exits,
+        },
+    }
+    config_path.touch(mode=0o600, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(document))
     ssh_map = BUILD / "ssh-map.json"
     ssh_map.write_text(
         json.dumps(
@@ -134,10 +134,10 @@ def write_env(
             indent=2,
         )
     )
-    return env_path, ssh_map, host_map
+    return config_path, ssh_map, host_map
 
 
-def recipe_env(env_path: Path, ssh_map: Path, host_map: Path) -> dict[str, str]:
+def recipe_env(config_path: Path, ssh_map: Path, host_map: Path) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -145,7 +145,7 @@ def recipe_env(env_path: Path, ssh_map: Path, host_map: Path) -> dict[str, str]:
     }
     env.update(
         {
-            "REEF_ENV_FILE": str(env_path),
+            "TEST_CONFIG_FILE": str(config_path),
             "REEF_TEST_MODE": "1",
             "TEST_SSH_MAP": str(ssh_map),
             "TEST_HOST_MAP": str(host_map),
@@ -158,20 +158,17 @@ def recipe_env(env_path: Path, ssh_map: Path, host_map: Path) -> dict[str, str]:
     return env
 
 
-def write_no_entry_override_env() -> Path:
-    env_path = BUILD / ".env.no-entry-override"
-    env_path.write_text(
-        "\n".join(
-            [
-                "REEF_SECRET=1111111111111111111111111111111111111111111111111111111111111111",
-                "REEF_ENTRY_OVERRIDE_BASE_DOMAIN=example.test",
-                "REEF_EXIT_1=us,172.28.0.20",
-            ]
-        )
-        + "\n"
-    )
-    env_path.chmod(0o600)
-    return env_path
+def write_no_entry_override_config() -> Path:
+    config_path = BUILD / "config.no-entry-override.yaml"
+    config_path.touch(mode=0o600, exist_ok=True)
+    config_path.write_text(yaml.safe_dump({
+        "secret": "11" * 32,
+        "cluster": {
+            "entry_override_base_domain": "example.test",
+            "exits": [{"name": "us", "ip": "172.28.0.20"}],
+        },
+    }))
+    return config_path
 
 
 def start_entry_override_echo(env: dict[str, str]) -> None:
@@ -230,11 +227,11 @@ echo "$!" >/tmp/reef_entry_override_echo.pid
 def main() -> int:
     BUILD.mkdir(parents=True, exist_ok=True)
     BUILD.chmod(0o700)
-    ctx, key_b64 = write_context()
-    env_path, ssh_map, host_map = write_env(key_b64)
-    reduced_env_path, _, _ = write_env(key_b64, name=".env.reduced", include_uk=False)
-    no_entry_env_path = write_no_entry_override_env()
-    no_entry_env = recipe_env(no_entry_env_path, ssh_map, host_map)
+    ctx, private_key = write_context()
+    config_path, ssh_map, host_map = write_config(private_key)
+    reduced_config_path, _, _ = write_config(private_key, name="config.reduced.yaml", include_uk=False)
+    no_entry_config_path = write_no_entry_override_config()
+    no_entry_env = recipe_env(no_entry_config_path, ssh_map, host_map)
     run_expect_failure(
         [
             str(ROOT / ".venv" / "bin" / "python"),
@@ -243,7 +240,7 @@ def main() -> int:
             "subscriptions",
         ],
         env=no_entry_env,
-        expected="REEF_ENTRY_OVERRIDE_BASE_DOMAIN requires at least one REEF_ENTRY_N",
+        expected="generation failed (details hidden in CI)",
     )
     run(
         [
@@ -265,8 +262,8 @@ def main() -> int:
         ["docker", "compose", "-p", PROJECT, "-f", "tests/compose.yml", "up", "-d"],
         env=compose_env,
     )
-    full_recipe_env = recipe_env(env_path, ssh_map, host_map)
-    reduced_recipe_env = recipe_env(reduced_env_path, ssh_map, host_map)
+    full_recipe_env = recipe_env(config_path, ssh_map, host_map)
+    reduced_recipe_env = recipe_env(reduced_config_path, ssh_map, host_map)
     try:
         for port in [2210, 2211, 2220, 2221]:
             wait_tcp(port)
