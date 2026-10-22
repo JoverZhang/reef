@@ -108,7 +108,8 @@ web password. It retains source URLs and credentials needed by the compiler.
 in Upstash Redis. A deployment-specific namespace makes each deployment start
 empty. A separate project/environment namespace retains a normalized baseline and
 50 nonempty diffs across deployments. `web/lib/history.ts` compares original
-endpoints, memberships and rules; secret values become server-only fingerprints.
+endpoints, memberships and rules; ordinary connection fields retain readable
+values while credentials become server-only fingerprints and display as `***`.
 Snapshot, baseline and any history entry are published atomically under the same
 refresh lock. Unchanged updates never append or trim history.
 `web/lib/runtime.ts` invokes the bundled compiler with private stdin and

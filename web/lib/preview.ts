@@ -31,7 +31,8 @@ export function previewHtml(preview: Preview, params: URLSearchParams, data: Pre
   <footer>Reef · Nodes and rules refresh together. Refresh your client to receive changes.</footer>
 </main>
 <dialog id="history-dialog" aria-labelledby="history-title"><div class="section-title"><h2 id="history-title">Update history</h2><button type="button" id="close-history" class="secondary" autofocus>Close</button></div>
-  <p class="hint">Last 50 changes · + added / - removed · sensitive values hidden</p>
+  <p class="hint">Last 50 changes · + added / - removed · credentials: ***</p>
+  <p class="hint">[not recorded] means an older value was not retained and cannot be recovered.</p>
   <p id="history-status" class="hint" role="status" aria-live="polite"></p><div id="history-list"></div><button id="history-more" class="secondary" hidden>Load older changes</button></dialog>
 <script id="preview-data" type="application/json">${embedded}</script>
 </body></html>`;

@@ -371,10 +371,16 @@ Compare original protocol endpoints once, before generated DIRECT/RELAY copies.
 Compare normalized fields, collection memberships, rule resource contents and
 effective rule order. Formatting, comments, object-key order and timestamps are
 not changes. Node renames appear as removal/addition. QX endpoint resolution
-changes are labeled separately from source changes. Only allowlisted public
-fields appear as values in history; credentials, addresses, source URLs and
-arbitrary protocol options are represented by redacted changes. The server-only
-baseline uses fingerprints to detect those changes without retaining old secrets.
+changes are labeled separately from source changes. Authenticated history shows
+allowlisted connection fields, including server addresses, ports, SNI, protocol
+and QX address-routing rules. Credentials (passwords, UUIDs, keys, authorization
+headers), source URLs and unclassified protocol options appear as `***`, with
+the field name retained. The server-only baseline uses fingerprints to detect
+those changes without retaining old secrets. Displayable fields retain their
+values so subsequent diffs can show both sides. Expanding this display list does
+not itself create a change. Older history and baselines did not retain every
+displayable value; those missing values appear as `[not recorded]`, never as an
+invented old address. Existing history is preserved.
 
 The preview distinguishes Last checked from Last changed and opens History in a
 drawer. Each entry is a timestamp and a compact expandable diff code block with

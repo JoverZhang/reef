@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { gzipSync } from "node:zlib";
 import test from "node:test";
 import { subscriptionService } from "../web/lib/service.ts";
 import { snapshotLoader, redisCommand, RefreshError, FRESH_MS } from "../web/lib/cache.ts";
@@ -227,23 +228,78 @@ test('history ignores timestamps, formatting and node order; fingerprints hide s
   assert.deepEqual(compare(null, baseline), []);
   const encoded = JSON.stringify(baseline);
   assert.ok(!encoded.includes('fictional-node-secret'));
-  assert.ok(!encoded.includes('192.0.2.10'));
+  assert.ok(encoded.includes('192.0.2.10'));
 });
 
-test('diff reports an original node once and redacts nested options and credentials', () => {
+test('diff shows connection changes once and masks credential values with asterisks', () => {
   const data = withNodes();
   data.proxies.push({ ...data.proxies[0], name: 'RELAY | Endpoint A | Pool A' });
   const next = structuredClone(data);
   next.sourceNodes[0].port = 8443;
+  next.sourceNodes[0].server = '198.51.100.10';
+  next.sourceNodes[0].sni = 'tls.example.invalid';
   next.sourceNodes[0].password = 'replacement-private-secret';
+  next.sourceNodes[0].uuid = '00000000-0000-4000-8000-000000000002';
+  next.sourceNodes[0]['reality-opts'] = { 'public-key': 'fictional-reality-key' };
   next.sourceNodes[0]['ws-opts'] = { headers: { Authorization: 'private-header' } };
   const lines = compare(comparisonBaseline(data), comparisonBaseline(next));
   assert.equal(lines.filter(line => line.startsWith('@@ Node /')).length, 1);
   assert.ok(lines.includes('- port: 443'));
   assert.ok(lines.includes('+ port: 8443'));
-  assert.ok(lines.includes('- password: [previous value hidden]'));
-  assert.ok(lines.includes('+ password: [updated value hidden]'));
-  for (const value of ['replacement-private-secret', 'private-header', 'RELAY | Endpoint']) assert.ok(!lines.join('\n').includes(value));
+  assert.ok(lines.includes('- server: "192.0.2.10"'));
+  assert.ok(lines.includes('+ server: "198.51.100.10"'));
+  assert.ok(lines.includes('+ sni: "tls.example.invalid"'));
+  assert.ok(lines.includes('- password: ***'));
+  assert.ok(lines.includes('+ password: ***'));
+  assert.ok(lines.includes('+ uuid: ***'));
+  assert.ok(lines.includes('+ reality-opts.public-key: ***'));
+  assert.ok(lines.includes('+ ws-opts.headers.Authorization: ***'));
+  for (const value of ['replacement-private-secret', 'private-header', 'RELAY | Endpoint',
+    '00000000-0000-4000-8000-000000000002', 'fictional-reality-key']) {
+    assert.ok(!lines.join('\n').includes(value));
+    assert.ok(!JSON.stringify(comparisonBaseline(next)).includes(value));
+  }
+});
+
+test('older hash-only baselines gain display values without creating artificial changes', () => {
+  const data = withNodes(), before = comparisonBaseline(data);
+  for (const node of Object.values(before.nodes)) delete node.server.value;
+  assert.deepEqual(compare(before, comparisonBaseline(data)), []);
+  data.sourceNodes[0].server = '198.51.100.10';
+  const lines = compare(before, comparisonBaseline(data));
+  assert.ok(lines.includes('- server: [not recorded]'));
+  assert.ok(lines.includes('+ server: "198.51.100.10"'));
+});
+
+test('QX resolution changes show their address-routing rules', () => {
+  const data = withNodes();
+  data.qx.relay = { sections: { filter_local: [] }, policies: [], nodes: [{
+    name: 'EXIT | Endpoint A', sourceName: 'Endpoint A', line: 'fictional-proxy-line',
+    rule: 'ip-cidr, 192.0.2.30/32, RELAY | Endpoint A',
+  }] };
+  const before = comparisonBaseline(data);
+  data.qx.relay.nodes[0].rule = 'ip-cidr, 198.51.100.30/32, RELAY | Endpoint A';
+  const lines = compare(before, comparisonBaseline(data));
+  assert.ok(lines.includes('@@ QX resolution / Endpoint A @@'));
+  assert.ok(lines.includes('- address: "ip-cidr, 192.0.2.30/32, RELAY | Endpoint A"'));
+  assert.ok(lines.includes('+ address: "ip-cidr, 198.51.100.30/32, RELAY | Endpoint A"'));
+});
+
+test('retained historical placeholders are displayed honestly without rewriting history', async () => {
+  const id = randomUUID();
+  const entry = { id, at: new Date().toISOString(), trigger: 'Manual refresh', added: 2, removed: 2,
+    lines: ['@@ Node / Endpoint A @@', '- server: [previous value hidden]', '+ server: [updated value hidden]',
+      '- password: [previous value hidden]', '+ password: [updated value hidden]'] };
+  const encoded = gzipSync(JSON.stringify(entry)).toString('base64');
+  const calls = [];
+  const load = snapshotLoader({ namespace: 'history-display', compile: () => { throw new Error('Must not refresh'); },
+    command: async (...args) => { calls.push(args); return encoded; } });
+  const detail = await load.history(1, id);
+  assert.deepEqual(detail.lines, ['@@ Node / Endpoint A @@', '- server: [not recorded]', '+ server: [not recorded]',
+    '- password: ***', '+ password: ***']);
+  assert.equal(detail.entry.added, 2);
+  assert.equal(detail.entry.removed, 2);
+  assert.deepEqual(calls, [['GET', `reef:history-display:history:${id}`]]);
 });
 
 test('rule diffs retain deletions and priority changes without repeating large unchanged resources', () => {

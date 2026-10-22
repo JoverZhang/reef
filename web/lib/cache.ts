@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 import type { Snapshot } from "./subscription.ts";
-import { comparisonBaseline, compare, changeSummary, type Baseline, type HistorySummary, type HistoryEntry, type HistoryOverview, type HistoryPage } from "./history.ts";
+import { comparisonBaseline, compare, changeSummary, displayHistoryLines, type Baseline, type HistorySummary, type HistoryEntry, type HistoryOverview, type HistoryPage } from "./history.ts";
 
 export const FRESH_MS = 60 * 60 * 1000;
 const RETAIN_SECONDS = 24 * 60 * 60;
@@ -138,7 +138,7 @@ export function snapshotLoader({ command, namespace, historyNamespace = namespac
         const value = await command("GET", `${historyKey}:${id}`) as string | null;
         if (!value) return { entries: [], page, pages: 1, total: 0 };
         const { lines, ...entry } = decode<HistoryEntry>(value);
-        return { entry, lines: lines.slice((page - 1) * 200, page * 200), page,
+        return { entry, lines: displayHistoryLines(lines.slice((page - 1) * 200, page * 200)), page,
           pages: Math.max(1, Math.ceil(lines.length / 200)), total: lines.length };
       }
       const [values, total] = await command("EVAL", "return {redis.call('LRANGE', KEYS[1], ARGV[1], ARGV[2]), redis.call('LLEN', KEYS[1])}",

@@ -22,8 +22,14 @@ function canonical(value: unknown): string {
     .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
   return JSON.stringify(value) ?? "null";
 }
-const publicFields = new Set(["name", "type", "port", "network", "udp", "tls", "flow", "skip-cert-verify",
-  "client-fingerprint", "packet-encoding", "dialer-proxy"]);
+const visibleFields = new Set(["name", "type", "server", "port", "network", "udp", "tls", "flow", "skip-cert-verify",
+  "client-fingerprint", "packet-encoding", "dialer-proxy", "sni", "servername", "alpn", "cipher", "address"]);
+const displayValue = (key: string, value?: string) => visibleFields.has(key) ? value ?? "[not recorded]" : "***";
+
+export function displayHistoryLines(lines: string[]): string[] {
+  return lines.map(line => line.replace(/^([+-] )(.+): \[(?:previous|updated) value hidden\]$/,
+    (_, sign: string, key: string) => `${sign}${key}: ${displayValue(key)}`));
+}
 function fields(node: Record<string, unknown>, prefix = ""): Record<string, Field> {
   return Object.fromEntries(Object.entries(node).flatMap(([key, value]): [string, Field][] => {
     const path = prefix + key;
@@ -32,7 +38,7 @@ function fields(node: Record<string, unknown>, prefix = ""): Record<string, Fiel
     }
     const encoded = canonical(value);
     return [[path, { hash: createHash("sha256").update(encoded).digest("hex"),
-      ...(publicFields.has(path) ? { value: encoded } : {}) }]];
+      ...(visibleFields.has(path) ? { value: encoded } : {}) }]];
   }));
 }
 const normalized = (lines: string[]) => lines.map(line => line.trim())
@@ -94,8 +100,8 @@ export function compare(before: Baseline | null, after: Baseline): string[] {
       for (const key of names(oldFields, newFields)) {
         const oldField = oldFields[key], newField = newFields[key];
         if (oldField?.hash === newField?.hash) continue;
-        if (oldField) lines.push(`- ${label(key)}: ${oldField.value ?? "[previous value hidden]"}`);
-        if (newField) lines.push(`+ ${label(key)}: ${newField.value ?? "[updated value hidden]"}`);
+        if (oldField) lines.push(`- ${label(key)}: ${displayValue(key, oldField.value)}`);
+        if (newField) lines.push(`+ ${label(key)}: ${displayValue(key, newField.value)}`);
       }
       append(`${category === "nodes" ? "Node" : "QX resolution"} / ${name}`, lines);
     }
