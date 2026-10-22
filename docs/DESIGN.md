@@ -391,9 +391,8 @@ History reads authenticate before Redis access and never refresh upstreams.
 History remains available when snapshots expire or refresh fails. Large diffs
 are loaded in pages. Only actual diffs count toward the 50-entry retention limit.
 
-The local interaction prototype also illustrates path latency. Live path probes
-are deferred until a measurement location and execution host are chosen; the
-production page does not display simulated measurements.
+Web latency probing and relay-to-exit latency matrices are out of scope.
+The production page does not display simulated measurements.
 
 Every exit is paired with every pool. Path compilation and validation happen on
 snapshot refresh; requests select pool memberships from the compiled graph and
