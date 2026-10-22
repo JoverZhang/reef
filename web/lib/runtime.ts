@@ -47,4 +47,6 @@ async function compile(): Promise<Snapshot> {
 export const loadSnapshot = snapshotLoader({
   command: redisCommand(), compile,
   namespace: `${process.env.VERCEL_DEPLOYMENT_ID ?? "local"}:${bootstrap.buildId}`,
+  historyNamespace: `${process.env.VERCEL_PROJECT_ID ?? "reef"}:${process.env.VERCEL_ENV ?? "local"}` +
+    (process.env.VERCEL_ENV === "preview" ? `:${process.env.VERCEL_DEPLOYMENT_ID ?? bootstrap.buildId}` : ""),
 });

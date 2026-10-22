@@ -334,8 +334,18 @@ node names, protocols, and selection/compatibility metadata, not connection
 credentials, addresses, or upstream URLs. The dump includes the selected nodes'
 connection details. Both routes use the same selection function and snapshot.
 
-Nodes and Rules tabs share the existing profile type selector. Rules show the
-configured rule order and target policies, resource counts, and timestamps.
+The preview is one continuous page: exit endpoints, relay pools, client choices,
+then rules. The sole profile selector lives in Client choices. Pool filters and
+profile changes update immediately without navigation or upstream requests.
+Literal, case-insensitive matches move first in the displayed pool, retaining
+their original relative order; unmatched nodes remain grey. This presentation
+order never changes exported node priority. Composition input applies after IME
+completion. Browser and server use the same selection implementation over a
+whitelisted metadata graph; credentials, addresses and source URLs stay server-side.
+All three profiles' safe metadata are included after authentication. The URL,
+compatibility errors, export links and rules follow the current selection.
+Force update replaces this metadata in place and preserves filters and profile.
+Rules show the configured rule order and target policies, resource counts, and timestamps.
 Resource contents are loaded on expansion with literal search and pagination,
 using the authenticated resource route with `format=json`, `q`, and `page`.
 Generated endpoint rules are described without revealing node addresses in HTML.
@@ -344,6 +354,40 @@ resources. QX proxy resources contain their required TUN reinjection flags;
 direct resources do not. Client resource intervals are one hour. Refreshing Reef
 does not push updates to clients; clients fetch configurations and resources on
 their own schedules. Include filters affect nodes only.
+
+### Update History
+
+Redis retains a comparison baseline and the most recent 50 successful updates
+that actually changed content. These keys are separate from deployment snapshots:
+redeployment still fetches fresh data, while the production baseline and history
+survive. Project/environment scopes isolate production, local development and
+preview deployments. The initial refresh establishes a baseline without adding a
+change record. An unchanged refresh updates the check time and one-hour freshness
+only: it neither consumes a history slot nor evicts the last real change. A failed
+refresh preserves the baseline and history. Refresh locks protect publication of
+the snapshot, baseline and any history entry in one Redis operation.
+
+Compare original protocol endpoints once, before generated DIRECT/RELAY copies.
+Compare normalized fields, collection memberships, rule resource contents and
+effective rule order. Formatting, comments, object-key order and timestamps are
+not changes. Node renames appear as removal/addition. QX endpoint resolution
+changes are labeled separately from source changes. Only allowlisted public
+fields appear as values in history; credentials, addresses, source URLs and
+arbitrary protocol options are represented by redacted changes. The server-only
+baseline uses fingerprints to detect those changes without retaining old secrets.
+
+The preview distinguishes Last checked from Last changed and opens History in a
+drawer. Each entry is a timestamp and a compact expandable diff code block with
+literal `+`/`-` lines and context; there is no separate change-card interface.
+`GET /history?password=...&page=1` lists ten entries at a time.
+Adding `id=<entry-id>` returns a page of 200 diff lines for that retained entry.
+History reads authenticate before Redis access and never refresh upstreams.
+History remains available when snapshots expire or refresh fails. Large diffs
+are loaded in pages. Only actual diffs count toward the 50-entry retention limit.
+
+The local interaction prototype also illustrates path latency. Live path probes
+are deferred until a measurement location and execution host are chosen; the
+production page does not display simulated measurements.
 
 Every exit is paired with every pool. Path compilation and validation happen on
 snapshot refresh; requests select pool memberships from the compiled graph and

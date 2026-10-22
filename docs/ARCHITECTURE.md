@@ -56,6 +56,7 @@ The first-phase product shape:
     │   ├── route.ts
     │   ├── dump/route.ts
     │   ├── refresh/route.ts
+    │   ├── history/route.ts
     │   └── rules/[profile]/[resource]/route.ts
     └── generated/
         ├── bootstrap.ts
@@ -105,16 +106,25 @@ web password. It retains source URLs and credentials needed by the compiler.
 
 `web/lib/cache.ts` coordinates a compressed snapshot and owner-token refresh lock
 in Upstash Redis. A deployment-specific namespace makes each deployment start
-empty. `web/lib/runtime.ts` invokes the bundled compiler with private stdin and
+empty. A separate project/environment namespace retains a normalized baseline and
+50 nonempty diffs across deployments. `web/lib/history.ts` compares original
+endpoints, memberships and rules; secret values become server-only fingerprints.
+Snapshot, baseline and any history entry are published atomically under the same
+refresh lock. Unchanged updates never append or trim history.
+`web/lib/runtime.ts` invokes the bundled compiler with private stdin and
 suppressed stderr. Only a complete successful refresh replaces shared data.
 
-`web/lib/subscription.ts` owns authentication, query parsing, pool filtering,
-preview metadata selection, and dump serialization. `web/lib/service.ts` authenticates
-before calling the snapshot loader and serves preview, dump, refresh, and rule routes;
-there is no second browser-side filtering implementation. The homepage returns
-server-rendered HTML only after authentication. `web/lib/preview.ts` renders only
-safe metadata; small static assets handle form submission and copying the dump
-link, forced refresh, and paginated rule searches. Authorized requests refresh
+`web/lib/subscription.ts` owns authentication, the safe metadata projection and
+dump serialization. `web/public/selection.js` owns query parsing and graph
+selection for both server and browser; it receives no connection credentials.
+`web/lib/service.ts` authenticates
+before calling the snapshot loader and serves preview, dump, refresh, rule, and history routes;
+the homepage returns server-rendered HTML only after authentication.
+`web/lib/preview.ts` embeds safe metadata for all profiles; shared render helpers
+in `web/public/view.js` render the same HTML on server and browser. The browser
+applies live pool filters and profile changes locally, preserves selection during
+forced refresh, and loads rules and diff history in pages. `GET /history` reads
+retained changes without refreshing upstreams. Authorized snapshot requests refresh
 expired data on demand. HTTP responses are never publicly cached.
 The old token route and `just urls` are removed. Internal file rendering remains
 for smoke and integration checks. Unsupported QX topologies or filters that leave

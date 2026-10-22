@@ -35,7 +35,9 @@ def bundle(root: Path) -> None:
             package.extractall(destination)
         archive.unlink()
     packages = destination / "packages"
-    shutil.copy2(ssl.get_default_verify_paths().cafile, destination / "ca-bundle.pem")
+    certificate = destination / "ca-bundle.pem"
+    certificate.unlink(missing_ok=True)
+    shutil.copyfile(ssl.get_default_verify_paths().cafile, certificate)
     subprocess.run([
         sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "--target", str(packages),
         "--platform", "manylinux2014_x86_64", "--python-version", "3.12", "--only-binary=:all:",

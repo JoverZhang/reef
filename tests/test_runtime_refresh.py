@@ -111,8 +111,10 @@ class RuntimeRefreshTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue()), {"error": expected})
 
     def test_web_runtime_contract(self):
+        # The optional Redis suite performs over 100 refreshes through docker exec.
+        timeout = 360 if os.environ.get("REEF_TEST_REDIS_CONTAINER") else 120
         result = subprocess.run(["node", "--experimental-strip-types", "--test", "tests/web_runtime.mjs"],
-                                cwd=core.ROOT, capture_output=True, text=True, timeout=120, env=os.environ.copy())
+                                cwd=core.ROOT, capture_output=True, text=True, timeout=timeout, env=os.environ.copy())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 

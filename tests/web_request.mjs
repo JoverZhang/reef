@@ -1,4 +1,4 @@
-import { select, dump, RequestError } from "../web/lib/subscription.ts";
+import { select, dump, RequestError, selectionModel } from "../web/lib/subscription.ts";
 import { previewHtml } from "../web/lib/preview.ts";
 
 let input = "";
@@ -8,7 +8,9 @@ try {
   const before = JSON.stringify(snapshot);
   const params = new URLSearchParams(query);
   const selection = select(snapshot, params);
-  const body = download ? dump(snapshot, selection) : previewHtml(selection.preview, params);
+  const body = download ? dump(snapshot, selection) : previewHtml(selection.preview, params, {
+    model: selectionModel(snapshot), cache: { fresh: true, error: null }, history: { count: 0, latest: null },
+  });
   if (JSON.stringify(snapshot) !== before) throw new Error("Request mutated the snapshot");
   process.stdout.write(JSON.stringify({ status: 200, preview: selection.preview, body }));
 } catch (error) {

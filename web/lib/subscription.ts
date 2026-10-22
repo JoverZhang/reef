@@ -1,5 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { stringify } from "yaml";
+import { RequestError, validateQuery, selectModel, profileLabels } from "../public/selection.js";
+export { RequestError, validateQuery };
 
 export type ProfileType = "clash" | "clash-geo" | "qx";
 export type NodeInfo = {
@@ -28,26 +30,19 @@ export type Snapshot = {
   pools: Pool[];
   otherNodes: NodeInfo[];
   proxies: Proxy[];
+  sourceNodes?: Proxy[];
   groups: Group[];
   templates: Record<"clash" | "clash-geo", Record<string, unknown>>;
   qx: { body: string | null; error: string | null; choices: string[]; relay: QxRelay | null };
   resources?: RuleResource[];
 };
 
-export class RequestError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
-
 export type Preview = {
   type: ProfileType;
   updatedAt: string;
   exits: Snapshot["exits"];
   otherNodes: NodeInfo[];
-  pools: (Pool & { filter: string; selected: string[] })[];
+  pools: (Pool & { filter: string; matched: string[]; selected: string[] })[];
   choices: string[];
   relays: { name: string; choices: string[] }[];
   errors: string[];
@@ -68,73 +63,53 @@ export function authenticate(passwordHash: string, params: URLSearchParams): voi
   }
 }
 
-export function validateQuery(params: URLSearchParams, poolIds: string[]): ProfileType {
-  const allowed = new Set(["password", "type", ...poolIds.map(id => `include${id}`)]);
-  for (const key of params.keys()) {
-    if (!allowed.has(key)) throw new RequestError(400, "Unknown query parameter or pool ID.");
-    if (params.getAll(key).length !== 1) throw new RequestError(400, "Query parameters must not be repeated.");
-  }
-  const type = params.get("type") ?? "clash-geo";
-  if (type !== "clash" && type !== "clash-geo" && type !== "qx") {
-    throw new RequestError(400, "type must be clash, clash-geo, or qx.");
-  }
-  return type;
+export type SelectionModel = Pick<Snapshot, "updatedAt" | "exits" | "pools" | "otherNodes"> & {
+  proxies: Pick<Proxy, "name" | "type" | "dialer-proxy">[];
+  groups: Pick<Group, "name" | "type" | "proxies">[];
+  qx: { error: string | null; choices: string[]; relay: {
+    nodes: Pick<QxRelay["nodes"][number], "name" | "sourceName">[];
+    policies: Pick<QxRelay["policies"][number], "name" | "members">[];
+  } | null };
+  profiles: Record<ProfileType, Pick<Preview, "resources" | "ruleOrder">>;
+};
+
+export function selectionModel(snapshot: Snapshot): SelectionModel {
+  const node = ({ name, originalName, protocol, qxSupported }: NodeInfo): NodeInfo =>
+    ({ name, originalName, protocol, qxSupported });
+  return {
+    updatedAt: snapshot.updatedAt,
+    exits: snapshot.exits.map(exit => ({ name: exit.name, nodes: exit.nodes.map(node) })),
+    pools: snapshot.pools.map(pool => ({ id: pool.id, name: pool.name, group: pool.group, nodes: pool.nodes.map(node) })),
+    otherNodes: snapshot.otherNodes.map(node),
+    proxies: snapshot.proxies.map(proxy => ({ name: proxy.name, type: proxy.type,
+      ...(proxy["dialer-proxy"] ? { "dialer-proxy": proxy["dialer-proxy"] } : {}) })),
+    groups: snapshot.groups.map(({ name, type, proxies }) => ({ name, type, proxies })),
+    qx: { error: snapshot.qx.error, choices: snapshot.qx.choices, relay: snapshot.qx.relay ? {
+      nodes: snapshot.qx.relay.nodes.map(({ name, sourceName }) => ({ name, sourceName })),
+      policies: snapshot.qx.relay.policies.map(({ name, members }) => ({ name, members })),
+    } : null },
+    profiles: Object.fromEntries((Object.keys(profileLabels) as ProfileType[]).map(type => [type, {
+      resources: (snapshot.resources ?? []).filter(resource => resource.profile === type)
+        .map(({ id, name, profile, policy, reinject, lines }) => ({ id, name, profile, policy, reinject, count: lines.length })),
+      ruleOrder: previewRules(snapshot, type),
+    }])) as SelectionModel["profiles"],
+  };
 }
 
 export function select(snapshot: Snapshot, params: URLSearchParams): Selection {
   authenticate(snapshot.passwordHash, params);
-  const type = validateQuery(params, snapshot.pools.map(pool => pool.id));
-  const errors: string[] = [];
-  const pools = snapshot.pools.map(pool => {
-    const filter = (params.get(`include${pool.id}`) ?? "").trim();
-    const terms = filter.split(",").map(term => term.trim().toLowerCase()).filter(Boolean);
-    if (filter && !terms.length) throw new RequestError(400, "Include filters must contain a search term.");
-    const matched = pool.nodes.filter(node => !terms.length || terms.some(term =>
-      node.originalName.toLowerCase().includes(term),
-    ));
-    const selected = matched.filter(node => type !== "qx" || node.qxSupported).map(node => node.name);
-    if (!matched.length) errors.push(`include${pool.id} selects no nodes in ${pool.name}.`);
-    else if (!selected.length) errors.push(`include${pool.id} selects no QX-compatible nodes in ${pool.name}.`);
-    return { ...pool, filter, selected };
-  });
-  const poolNodes = new Set(pools.flatMap(pool => pool.nodes.map(node => node.name)));
-  const selectedNodes = new Set(pools.flatMap(pool => pool.selected));
-  const proxies = snapshot.proxies.filter(node => !poolNodes.has(node.name) || selectedNodes.has(node.name));
-  const poolGroups = new Map(pools.map(pool => [pool.group, pool.selected]));
-  const groups = snapshot.groups.map(group => ({
-    ...group, proxies: poolGroups.get(group.name) ?? [...group.proxies],
-  }));
-  const known = new Set(["DIRECT", "REJECT", ...proxies.map(node => node.name), ...groups.map(group => group.name)]);
-  if (groups.some(group => group.proxies.some(name => !known.has(name))) ||
-      proxies.some(node => node["dialer-proxy"] && !known.has(node["dialer-proxy"]))) {
-    errors.push("Filtering removes a node required by another path. Adjust the pool filters.");
-  }
-  if (type === "qx" && snapshot.qx.error) errors.push(snapshot.qx.error);
-  const qx = type === "qx" && snapshot.qx.relay ? {
-    ...snapshot.qx.relay,
-    nodes: snapshot.qx.relay.nodes.filter(node => !poolNodes.has(node.sourceName) || selectedNodes.has(node.sourceName)),
-    policies: snapshot.qx.relay.policies.map(policy => ({
-      ...policy, members: poolGroups.get(policy.name) ?? [...policy.members],
-    })),
-  } : null;
-  if (qx) {
-    const known = new Set(["direct", "reject", ...qx.nodes.map(node => node.name), ...qx.policies.map(policy => policy.name)]);
-    if (qx.policies.some(policy => !policy.members.length || policy.members.some(name => !known.has(name)))) {
-      errors.push("QX filtering leaves an empty or unresolved policy. Adjust the pool filters.");
-    }
-  }
+  const selected = selectModel(selectionModel(snapshot), params);
+  const names = new Set(selected.proxies.map(node => node.name));
+  const qxNames = new Set(selected.qx?.nodes.map(node => node.name));
   return {
-    proxies, groups, qx,
-    preview: {
-      type, updatedAt: snapshot.updatedAt, exits: snapshot.exits, otherNodes: snapshot.otherNodes,
-      pools, choices: type === "qx" ? snapshot.qx.choices : groups.find(group => group.name === "PROXY")?.proxies ?? [],
-      relays: qx?.policies.filter(policy => policy.name.startsWith("RELAY | "))
-        .map(policy => ({ name: policy.name, choices: policy.members })) ?? [],
-      errors,
-      resources: (snapshot.resources ?? []).filter(resource => resource.profile === type)
-        .map(({ lines, ...resource }) => ({ ...resource, count: lines.length })),
-      ruleOrder: previewRules(snapshot, type),
-    },
+    preview: selected.preview,
+    proxies: snapshot.proxies.filter(node => names.has(node.name)),
+    groups: snapshot.groups.map((group, index) => ({ ...group, proxies: selected.groups[index].proxies })),
+    qx: selected.qx && snapshot.qx.relay ? {
+      ...snapshot.qx.relay,
+      nodes: snapshot.qx.relay.nodes.filter(node => qxNames.has(node.name)),
+      policies: snapshot.qx.relay.policies.map((policy, index) => ({ ...policy, members: selected.qx!.policies[index].members })),
+    } : null,
   };
 }
 

@@ -1,6 +1,7 @@
 import { stringify } from "yaml";
 import { RefreshError, type CacheState } from "./cache.ts";
-import { authenticate, validateQuery, select, dump, RequestError, type Preview } from "./subscription.ts";
+import { authenticate, validateQuery, select, dump, RequestError, selectionModel, type Preview } from "./subscription.ts";
+import type { HistoryPage } from "./history.ts";
 import { previewHtml } from "./preview.ts";
 
 const headers = {
@@ -29,8 +30,14 @@ function requestOrigin(request: Request): string {
 export function subscriptionService(
   bootstrap: { passwordHash: string; poolIds: string[] },
   load: (force?: boolean) => Promise<CacheState>,
+  readHistory?: (page: number, id?: string) => Promise<HistoryPage>,
 ) {
   const auth = (params: URLSearchParams) => authenticate(bootstrap.passwordHash, params);
+  const data = (state: CacheState) => ({
+    model: state.snapshot ? selectionModel(state.snapshot) : null,
+    cache: { fresh: state.fresh, error: state.error },
+    history: state.history ?? { count: 0, latest: null },
+  });
   return {
     async serve(request: Request, download: boolean): Promise<Response> {
       try {
@@ -56,7 +63,7 @@ export function subscriptionService(
         };
         preview.cache = { fresh: state.fresh, error: state.error };
         if (!state.fresh) preview.errors.push(state.error ?? "A current snapshot is unavailable.");
-        return response(previewHtml(preview, params), state.snapshot ? 200 : 502, "text/html; charset=utf-8");
+        return response(previewHtml(preview, params, data(state)), state.snapshot ? 200 : 502, "text/html; charset=utf-8");
       } catch (error) { return errorResponse(error); }
     },
 
@@ -72,9 +79,29 @@ export function subscriptionService(
         }
         const state = await load(true);
         if (state.error || !state.fresh || !state.snapshot) {
-          throw new RequestError(502, state.error ?? "Refresh did not produce a current snapshot.");
+          return response(JSON.stringify({ ...data(state), error: state.error ?? "Refresh did not produce a current snapshot." }), 502, "application/json");
         }
-        return response(JSON.stringify({ updatedAt: state.snapshot.updatedAt }), 200, "application/json");
+        return response(JSON.stringify({ updatedAt: state.snapshot.updatedAt, ...data(state) }), 200, "application/json");
+      } catch (error) { return errorResponse(error); }
+    },
+
+    async history(request: Request): Promise<Response> {
+      try {
+        const params = new URL(request.url).searchParams;
+        auth(params);
+        for (const key of params.keys()) {
+          if (!["password", "page", "id"].includes(key) || params.getAll(key).length !== 1) {
+            throw new RequestError(400, "Invalid history query parameter.");
+          }
+        }
+        const page = params.get("page") ?? "1", id = params.get("id") ?? undefined;
+        if (!/^[1-9][0-9]{0,6}$/.test(page) || (id !== undefined && !/^[a-f0-9-]{36}$/.test(id))) {
+          throw new RequestError(400, "Invalid history page or entry.");
+        }
+        if (!readHistory) throw new RefreshError("Update history is unavailable.");
+        const result = await readHistory(Number(page), id);
+        if (id && !("entry" in result)) throw new RequestError(404, "History entry is no longer available.");
+        return response(JSON.stringify(result), 200, "application/json");
       } catch (error) { return errorResponse(error); }
     },
 

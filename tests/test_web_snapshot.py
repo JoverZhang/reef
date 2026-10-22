@@ -81,6 +81,9 @@ class WebSnapshotTests(unittest.TestCase):
         self.assertEqual(self.snapshot["passwordHash"], hashlib.sha256(PASSWORD.encode()).hexdigest())
         self.assertEqual(self.snapshot["pools"][0]["nodes"][0]["originalName"], "Alpha 01")
         self.assertEqual(self.snapshot["pools"][0]["nodes"][0]["name"], "source-a | Alpha 01")
+        originals = [node["name"] for node in self.snapshot["sourceNodes"]]
+        self.assertEqual(len(originals), len(set(originals)))
+        self.assertFalse(any(name.startswith(("DIRECT |", "RELAY |")) for name in originals))
 
     def test_authentication_precedes_parameter_validation(self):
         for query in ([], {"password": "wrong", "include999": "Alpha"},
