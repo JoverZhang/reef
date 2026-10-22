@@ -7,6 +7,7 @@ import socket
 from urllib.request import urlopen
 
 from subscriptions.upstream import quantumult_x_nodes, qx_supported
+from subscriptions.rules import qx_rules
 
 
 class UnsupportedRelay(ValueError):
@@ -61,23 +62,9 @@ def _proxy_rules(resources: list[str]) -> tuple[list[str], list[str]]:
                 body = response.read(4 * 1024 * 1024 + 1)
             if len(body) > 4 * 1024 * 1024:
                 raise ValueError()
-            lines = body.decode("utf-8-sig").splitlines()
         except Exception:
             raise ValueError(f"QX rule resource #{index} fetch failed") from None
-        rules = []
-        for line in lines:
-            if not line.strip() or line.lstrip().startswith(("#", ";", "//")):
-                continue
-            fields = [part.strip() for part in line.split(",")]
-            if len(fields) != 3 or not fields[1] or fields[0].lower() not in {
-                "host", "host-suffix", "host-keyword", "host-wildcard", "user-agent",
-                "ip-cidr", "ip6-cidr", "ip-asn", "geoip",
-            }:
-                raise ValueError(f"QX rule resource #{index} contains an unsupported rule")
-            rules.append(f"{fields[0].lower()}, {fields[1]}, Reef, via-interface=%TUN%")
-        if not rules:
-            raise ValueError(f"QX rule resource #{index} contains no rules")
-        local.extend(rules)
+        local.extend(qx_rules(body, "Reef", True, f"QX rule resource #{index}"))
     return remote, list(dict.fromkeys(local))
 
 
@@ -164,7 +151,8 @@ def compile_relay(context: dict, exits: list[str], pools: list[str], profile: di
         kind, name = head.split("=", 1)
         policies.append({"name": name, "kind": kind, "members": [item for item in items if "=" not in item],
                          "options": [item for item in items if "=" in item]})
-    remote, rules = _proxy_rules(sections["filter_remote"])
+    remote, rules = ((sections["filter_remote"], []) if context.get("hosted_rules")
+                     else _proxy_rules(sections["filter_remote"]))
     sections["filter_remote"] = remote
     sections["filter_local"] = rules + [
         line + ", via-interface=%TUN%" if line == "final, Reef" else line

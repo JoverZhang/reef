@@ -13,10 +13,10 @@ VERSION = "2.39.6"
 SHA256 = "0b3f15b1ca3dd5c8575be7360a154e012a66f2e3b0e207ea37c10c8f8a741f54"
 URL = f"https://github.com/sub-store-org/Sub-Store/releases/download/{VERSION}/proxy-utils.esm.mjs"
 ROOT = Path(__file__).resolve().parents[1]
+NODE = "node"
 
 
-def convert(proxies: list[dict]) -> list[str]:
-    """Run the pinned official parser/producer with node data on stdin, offline."""
+def ensure_bundle() -> Path:
     cache = ROOT / "build" / "substore"
     cache.mkdir(parents=True, exist_ok=True)
     bundle = cache / f"proxy-utils-{VERSION}.mjs"
@@ -33,10 +33,16 @@ def convert(proxies: list[dict]) -> list[str]:
             raise ValueError("checksum mismatch")
     except Exception:
         raise ValueError("Sub-Store download or checksum verification failed") from None
+    return bundle
+
+
+def convert(proxies: list[dict]) -> list[str]:
+    """Run the pinned official parser/producer with node data on stdin, offline."""
+    bundle = ensure_bundle()
 
     try:
         result = subprocess.run(
-            ["node", "--experimental-vm-modules", str(ROOT / "subscriptions" / "substore.mjs"), str(bundle)],
+            [NODE, "--experimental-vm-modules", str(ROOT / "subscriptions" / "substore.mjs"), str(bundle)],
             input=json.dumps({"proxies": proxies}),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -45,7 +51,7 @@ def convert(proxies: list[dict]) -> list[str]:
             check=True,
             # The converter never receives Reef's environment or subscription URLs.
             env={"PATH": os.environ.get("PATH", os.defpath)},
-            cwd=cache,
+            cwd=bundle.parent,
         )
         lines = json.loads(result.stdout)
         if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):

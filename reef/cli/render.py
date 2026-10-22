@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from reef.core import is_ci, load_model, render_ansible, render_subscriptions, render_web
+from reef.core import is_ci, load_model, prepare_web, render_ansible, render_subscriptions
 
 
 def main() -> int:
@@ -16,8 +16,8 @@ def main() -> int:
     if "ansible" in args.targets:
         render_ansible(model)
     if "web" in args.targets:
-        render_web(model)
-    elif "subscriptions" in args.targets:
+        prepare_web(model)
+    if "subscriptions" in args.targets:
         render_subscriptions(model)
     return 0
 

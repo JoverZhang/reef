@@ -66,7 +66,6 @@ web-build: setup
     cd web && pnpm build
 
 web-dev: setup
-    {{python}} -m reef.cli.render web
     cd web && pnpm install --frozen-lockfile
     cd web && pnpm dev
 

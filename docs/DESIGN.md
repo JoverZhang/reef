@@ -263,24 +263,28 @@ Not in the first phase:
 
 The subscription Web is a Vercel-hosted Next.js app. It is not deployed by Ansible and does not SSH into nodes.
 
-Build-time flow:
+Build-time flow (no upstream or rule downloads):
 
 ```text
-CONFIG_YAML -> config.yaml -> Python compilation -> server-only node/path snapshot
+CONFIG_YAML -> config.yaml -> validated private runtime input and bundled compiler
 ```
 
 Request-time flow:
 
 ```text
 GET /?password=...&type=clash-geo&include1=Alpha,Beta
-  -> authenticate -> filter snapshot -> preview
+  -> authenticate -> load or refresh shared snapshot -> filter -> preview
 GET /dump?password=...&type=clash-geo&include1=Alpha,Beta
-  -> authenticate -> the same selection -> serialize configuration
+  -> authenticate -> load or refresh the same snapshot -> select -> serialize
+POST /refresh
+  -> authenticate the password in the JSON body -> force a shared refresh
+GET /rules/<type>/<resource>?password=...
+  -> authenticate -> load or refresh snapshot -> serve the compiled rule resource
 ```
 
 `web.password` is an independent random access key of at least 32 characters.
 It is required for website builds, must differ from `secret`, and is stored only
-as a SHA-256 digest in the server-only snapshot. Missing, repeated, or incorrect
+as a SHA-256 digest in the server-only bootstrap and snapshot. Missing, repeated, or incorrect
 passwords return a real HTTP 404 before any preview data is returned. The previous
 opaque subscription paths are removed and return 404. There is no `dump=1` alias.
 `just urls` is removed; use the preview's copy-link or download action. Use
@@ -299,17 +303,51 @@ Unknown or repeated parameters, unknown pool IDs, and invalid types return 400.
 A nonempty filter that selects no nodes produces a visible pool-specific preview
 error and a 422 dump response; it never silently removes a pool or changes paths.
 
-The preview shows the snapshot time, all exit endpoints and pool nodes, selected
+Snapshots are shared through Upstash Redis, using the Marketplace-provided
+`KV_REST_API_URL` and `KV_REST_API_TOKEN` (or Upstash's standard
+`UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`). These are hosting
+credentials, not subscription configuration. There is no in-memory production
+fallback. Cache keys include the deployment identity; a new deployment starts
+with no usable snapshot. The first authenticated preview, dump, or rule request
+loads upstreams and rule resources. Incorrect passwords never contact Redis or
+upstreams. Snapshots are fresh for one hour from successful completion; reads do
+not extend freshness. Expired snapshots refresh on demand, without a scheduler.
+
+Force update uses authenticated POST and refreshes the whole snapshot, including
+node DNS used by QX. A shared expiring lock coalesces refreshes across instances.
+Only the lock owner can publish or release its work. All required sources must
+succeed before atomically replacing the snapshot. Failures identify source
+positions or rule resource names without URLs or credentials, preserve the last
+snapshot and its original timestamp, and return an error for the refresh. Fresh
+older data remains usable. Expired older data may be displayed with a clear
+error but never exported as a successful subscription or rule response.
+Snapshots are retained for up to one day for this stale preview behavior.
+Refresh workers have a three-minute compiler timeout and a four-minute lock.
+Other requests wait up to one minute for an active refresh, then return a retry
+error. A failed or expired worker cannot overwrite a newer snapshot.
+
+The preview shows the snapshot time, freshness, refresh errors, a Force update
+button, all exit endpoints and pool nodes, selected
 counts, and the resulting PROXY choices. Unmatched nodes remain visible and grey
 with a reason. Filter/type edits update the URL. Preview responses contain only
 node names, protocols, and selection/compatibility metadata, not connection
 credentials, addresses, or upstream URLs. The dump includes the selected nodes'
 connection details. Both routes use the same selection function and snapshot.
 
-Every exit is paired with every pool. Path compilation and validation happen at
-build time; requests select pool memberships from the compiled graph and serialize
-only the selected nodes. Requests never fetch upstream subscriptions or change the
-snapshot. Shared nodes survive when selected by another pool, while each pool
+Nodes and Rules tabs share the existing profile type selector. Rules show the
+configured rule order and target policies, resource counts, and timestamps.
+Resource contents are loaded on expansion with literal search and pagination,
+using the authenticated resource route with `format=json`, `q`, and `page`.
+Generated endpoint rules are described without revealing node addresses in HTML.
+Mihomo rule-providers and QX filter_remote reference Reef's authenticated rule
+resources. QX proxy resources contain their required TUN reinjection flags;
+direct resources do not. Client resource intervals are one hour. Refreshing Reef
+does not push updates to clients; clients fetch configurations and resources on
+their own schedules. Include filters affect nodes only.
+
+Every exit is paired with every pool. Path compilation and validation happen on
+snapshot refresh; requests select pool memberships from the compiled graph and
+serialize only the selected nodes. Shared nodes survive when selected by another pool, while each pool
 retains its own filtered membership. Static settings are identical to the existing
 profile templates. A displayed path is a configuration option, not proof of live
 connectivity; clients perform their own probes.
@@ -326,11 +364,19 @@ request logging must not print full URLs. URL keys can still enter browser histo
 or hosting-platform access logs. Filters are not access controls: anyone with the
 key can change them and obtain the complete allowed snapshot.
 
-`web/generated/snapshot.ts` is ignored by git and marked `server-only`. It contains
-compiled node/path data and fixed settings, never the root seed, SSH key, upstream
-URLs, or plaintext website password. A failed fetch/validation must leave the
-previous artifact intact. Internal subscription rendering remains for smoke and
-integration checks; it does not publish token URLs.
+`web/generated/` is ignored by git. Its server-only bootstrap contains the password
+digest and pool IDs; private runtime input also contains upstream URLs and derived
+node credentials needed for refreshing. Neither contains the root seed, SSH key,
+or plaintext web password. The website bundles a pinned standalone Python runtime,
+minimal compiler dependencies, and the pinned Sub-Store converter. Node invokes
+that same Python compiler with private input on stdin and suppressed diagnostics;
+there is no second subscription compiler in TypeScript. Internal file rendering
+continues to use the same compiler for smoke and integration checks.
+Website builds target Linux amd64, matching the Vercel Node runtime.
+Connect an Upstash Redis database to the Vercel project's Production environment
+through Marketplace, then redeploy so the function receives the integration's
+environment variables. Local development needs the same REST URL/token pair in
+its environment; these credentials are never committed or placed in `config.yaml`.
 
 ### Native Mihomo Input
 
@@ -402,7 +448,7 @@ empty groups, missing references, and cyclic group references fail before
 replacing artifacts. Fetch failures identify `upstream URL #N` and provider
 position, never the URL, credentials, or response body.
 HTTP requests use a 30-second socket timeout; an unavailable source still fails
-generation instead of falling back to an older snapshot.
+the refresh. Previously successful snapshots follow the freshness policy above.
 
 Quantumult X keeps the existing supported-node conversion contract below.
 Unsupported nodes and their group memberships are omitted with a count; a group
@@ -544,8 +590,9 @@ Existing Reef-managed entry ports already forward through a fixed exit and are
 not used as ordinary intermediates in this example. A standalone exit definition
 must match the deployed endpoint; if its server credentials change, update it.
 
-Use `just web-dev` for local preview and `just web-deploy` to publish a fresh
-snapshot. The global and rule-based Mihomo templates keep their existing behavior.
+Use `just web-dev` for local preview and `just web-deploy` to publish configuration
+changes. Force update refreshes subscription data without deployment.
+The global and rule-based Mihomo templates keep their existing behavior.
 The rule-based profile can still route China destinations directly; only traffic
 assigned to `PROXY` uses the chain. Non-chain configurations retain QX export
 using the existing conversion contract.
@@ -573,14 +620,14 @@ export rather than changing the chain.
 Proxy traffic rules use `via-interface=%TUN%`. Endpoint-address rules route the
 resulting exit connection through its RELAY selector without reinjecting it.
 Pool-address rules use `direct`, so selecting a pool in Reef does not recurse.
-The proxy rule resources listed by the existing template are fetched at
-publication time and embedded with their assigned policies and relay flags.
-The direct rule resource remains remote. There is no client-side resource parser
-or request-time fetch. Fetch/parse failures abort publication.
-Node domains are resolved once per publication to one IPv4 address, or IPv6 when
+All rule resources listed by the existing template are fetched during the shared
+refresh and served by authenticated Reef URLs, with their assigned policies and
+relay flags. No client-side resource parser is required. Fetch/parse failures
+abort the refresh. Internal offline rendering retains embedded proxy rules.
+Node domains are resolved once per refresh to one IPv4 address, or IPv6 when
 IPv4 is unavailable, preserving the original TLS SNI and WebSocket Host. These
 QX-only address snapshots avoid routing loops caused by endpoint DNS changes;
-republish to refresh them. Mihomo retains its original node addresses and DNS.
+Force update refreshes them. Mihomo retains its original node addresses and DNS.
 
 Different exits cannot share a resolved address, and an exit cannot share one
 with a pool. Such ambiguous topologies block QX export without exposing addresses
@@ -672,9 +719,10 @@ not skip the failed source or replace previously generated subscription files.
 Errors identify the source as `upstream URL #N`, numbered from 1 in fetch order
 (the order of `subscriptions.upstream_urls`), and distinguish a failed
 request, invalid response format, and an empty node list. There is no background
-poller: website builds and internal subscription rendering steps fetch
-fresh nodes; hosted contents change after the next successful website deployment.
-Upstream URLs may contain credentials and stay in private `config.yaml` / `CONFIG_YAML`.
+poller: authenticated requests refresh expired hosted data, while internal
+subscription rendering fetches fresh nodes directly. Website builds only package
+inputs. Upstream URLs may contain credentials and stay in private configuration
+and server-only compiler input.
 
 ### Legacy Subscription Extension
 

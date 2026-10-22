@@ -16,6 +16,10 @@ type QxRelay = {
   nodes: { name: string; sourceName: string; line: string; rule: string }[];
   policies: { name: string; kind: string; members: string[]; options: string[] }[];
 };
+export type RuleResource = {
+  id: string; name: string; profile: "clash-geo" | "qx";
+  policy: string; reinject: boolean; lines: string[];
+};
 
 export type Snapshot = {
   updatedAt: string;
@@ -27,6 +31,7 @@ export type Snapshot = {
   groups: Group[];
   templates: Record<"clash" | "clash-geo", Record<string, unknown>>;
   qx: { body: string | null; error: string | null; choices: string[]; relay: QxRelay | null };
+  resources?: RuleResource[];
 };
 
 export class RequestError extends Error {
@@ -46,20 +51,25 @@ export type Preview = {
   choices: string[];
   relays: { name: string; choices: string[] }[];
   errors: string[];
+  resources?: (Omit<RuleResource, "lines"> & { count: number })[];
+  ruleOrder?: string[];
+  cache?: { fresh: boolean; error: string | null };
 };
 
 export type Selection = { preview: Preview; proxies: Proxy[]; groups: Group[]; qx: QxRelay | null };
 
-export function select(snapshot: Snapshot, params: URLSearchParams): Selection {
-  // Authenticate before validating filters or revealing the available pool IDs.
+export function authenticate(passwordHash: string, params: URLSearchParams): void {
   const passwords = params.getAll("password");
   if (passwords.length !== 1 || !timingSafeEqual(
     createHash("sha256").update(passwords[0]).digest(),
-    Buffer.from(snapshot.passwordHash, "hex"),
+    Buffer.from(passwordHash, "hex"),
   )) {
     throw new RequestError(404, "Not found");
   }
-  const allowed = new Set(["password", "type", ...snapshot.pools.map(pool => `include${pool.id}`)]);
+}
+
+export function validateQuery(params: URLSearchParams, poolIds: string[]): ProfileType {
+  const allowed = new Set(["password", "type", ...poolIds.map(id => `include${id}`)]);
   for (const key of params.keys()) {
     if (!allowed.has(key)) throw new RequestError(400, "Unknown query parameter or pool ID.");
     if (params.getAll(key).length !== 1) throw new RequestError(400, "Query parameters must not be repeated.");
@@ -68,6 +78,12 @@ export function select(snapshot: Snapshot, params: URLSearchParams): Selection {
   if (type !== "clash" && type !== "clash-geo" && type !== "qx") {
     throw new RequestError(400, "type must be clash, clash-geo, or qx.");
   }
+  return type;
+}
+
+export function select(snapshot: Snapshot, params: URLSearchParams): Selection {
+  authenticate(snapshot.passwordHash, params);
+  const type = validateQuery(params, snapshot.pools.map(pool => pool.id));
   const errors: string[] = [];
   const pools = snapshot.pools.map(pool => {
     const filter = (params.get(`include${pool.id}`) ?? "").trim();
@@ -115,20 +131,51 @@ export function select(snapshot: Snapshot, params: URLSearchParams): Selection {
       relays: qx?.policies.filter(policy => policy.name.startsWith("RELAY | "))
         .map(policy => ({ name: policy.name, choices: policy.members })) ?? [],
       errors,
+      resources: (snapshot.resources ?? []).filter(resource => resource.profile === type)
+        .map(({ lines, ...resource }) => ({ ...resource, count: lines.length })),
+      ruleOrder: previewRules(snapshot, type),
     },
   };
 }
 
-export function dump(snapshot: Snapshot, selection: Selection): string {
+export function resourceUrl(origin: string, password: string, id: string): string {
+  const url = new URL(`/rules/${id}`, origin);
+  url.searchParams.set("password", password);
+  return url.href;
+}
+
+function previewRules(snapshot: Snapshot, type: ProfileType): string[] {
+  const addresses = new Set(snapshot.proxies.map(proxy => proxy.server));
+  if (type === "qx") {
+    return [
+      ...(snapshot.qx.relay ? ["Exit connections → their RELAY selectors", "Pool connections → direct"] : []),
+      ...(snapshot.resources ?? []).filter(resource => resource.profile === "qx")
+        .map(resource => `RULE-SET,${resource.name},${resource.policy}`),
+      ...(snapshot.qx.relay?.sections.filter_local ?? []),
+    ];
+  }
+  return ((snapshot.templates[type].rules ?? []) as string[]).map(rule => {
+    const fields = rule.split(",");
+    return addresses.has(fields[1]?.replace(/\/(32|128)$/, ""))
+      ? `Endpoint connection → ${fields[2]}` : rule;
+  });
+}
+
+export function dump(snapshot: Snapshot, selection: Selection, location?: { origin: string; password: string }): string {
   if (selection.preview.errors.length) {
     throw new RequestError(422, selection.preview.errors.join("\n"));
   }
   const type = selection.preview.type;
+  const rewrite = (line: string) => line.replace(/^reef-resource:([^,\s]+)/, (_, id: string) => {
+    if (!location) throw new RequestError(500, "Rule resource origin is unavailable.");
+    return resourceUrl(location.origin, location.password, id);
+  });
   if (type === "qx") {
     if (selection.qx) {
       const { sections, nodes, policies } = selection.qx;
       const selectedSections = {
         ...sections,
+        filter_remote: sections.filter_remote.map(rewrite),
         server_local: nodes.map(node => node.line),
         policy: policies.map(policy => `${policy.kind}=${policy.name}, ${[...policy.members, ...policy.options].join(", ")}`),
         filter_local: [...new Set(nodes.map(node => node.rule)), ...sections.filter_local],
@@ -136,10 +183,14 @@ export function dump(snapshot: Snapshot, selection: Selection): string {
       return Object.entries(selectedSections).map(([name, lines]) => `[${name}]\n${lines.join("\n")}`).join("\n\n") + "\n";
     }
     if (snapshot.qx.body === null) throw new RequestError(422, "Quantumult X export is unavailable.");
-    return snapshot.qx.body;
+    return snapshot.qx.body.split("\n").map(rewrite).join("\n");
+  }
+  const template = structuredClone(snapshot.templates[type]);
+  for (const provider of Object.values((template["rule-providers"] ?? {}) as Record<string, { url: string }>)) {
+    provider.url = rewrite(provider.url);
   }
   return stringify({
-    ...snapshot.templates[type], proxies: selection.proxies, "proxy-groups": selection.groups,
+    ...template, proxies: selection.proxies, "proxy-groups": selection.groups,
   }, {
     lineWidth: 0, aliasDuplicateObjects: false,
     defaultKeyType: "PLAIN", defaultStringType: "QUOTE_DOUBLE",

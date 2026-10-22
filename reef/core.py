@@ -22,13 +22,7 @@ from cryptography.x509.oid import NameOID
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from subscriptions.extension import parse_extend_nodes
-from subscriptions.mihomo import (
-    INPUT_KEYS, load_providers as load_proxy_providers, relay_groups, validate_input,
-)
-from subscriptions.upstream import (
-    load_nodes as load_upstream_nodes,
-    quantumult_x_nodes,
-)
+from subscriptions.mihomo import INPUT_KEYS, validate_input
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -860,52 +854,11 @@ def render_subscriptions(
 def _compile_subscriptions(
     model: Model, host_map_path: Path | None = None, *, mihomo_only: bool = False,
 ) -> tuple[list[dict], dict]:
-    host_map = _load_json_file(host_map_path or _env_path("TEST_HOST_MAP"))
-    renderer = load_subscription_renderer()
-    context = subscription_context(model, host_map)
-    context["upstream_proxies"] = load_upstream_nodes(
-        model.config.upstream_urls, model.config.extend_proxies
-    )
-    context["top_proxy_names"] = [node["name"] for node in context["upstream_proxies"]]
-    context["original_names"] = {}
-    provider_nodes, context["provider_members"] = load_proxy_providers(
-        model.config.proxy_providers, model.config.exit_providers,
-        original_names=context["original_names"],
-    )
-    context["provider_nodes"] = provider_nodes
-    if model.config.exit_providers:
-        provider_nodes, context["proxy_groups"] = relay_groups(
-            provider_nodes, context["provider_members"], model.config.exit_providers,
-            list(model.config.pools.values()),
-        )
-    nodes_by_name = {node["name"]: node for node in context["upstream_proxies"]}
-    for node in provider_nodes:
-        if node["name"] in nodes_by_name and nodes_by_name[node["name"]] != node:
-            raise ValueError("proxy-provider node conflicts with a top-level proxy")
-        nodes_by_name.setdefault(node["name"], node)
-    context["upstream_proxies"] = list(nodes_by_name.values())
-    has_chain = any("dialer-proxy" in node for node in context["upstream_proxies"])
-    qx_profile = next(p for p in context["profiles"] if p["id"] == "quantumult-x")
-    if mihomo_only or has_chain:
-        context["profiles"] = [p for p in context["profiles"] if p["id"] != "quantumult-x"]
-    else:
-        context["qx_upstream"] = quantumult_x_nodes(context["upstream_proxies"])
-    rendered = renderer.render(context)
-    if hasattr(renderer, "validate"):
-        renderer.validate(rendered, context)
-    if model.config.exit_providers and not mihomo_only:
-        from subscriptions.quantumult_x import UnsupportedRelay, compile_relay
+    from subscriptions.compiler import compile_profiles
 
-        try:
-            qx_rendered, context["qx_relay"] = compile_relay(
-                context, model.config.exit_providers, list(model.config.pools.values()),
-                qx_profile, renderer,
-            )
-        except UnsupportedRelay as error:
-            context["qx_error"] = str(error)
-        else:
-            rendered.append(qx_rendered)
-    return rendered, context
+    host_map = _load_json_file(host_map_path or _env_path("TEST_HOST_MAP"))
+    return compile_profiles(model.config, subscription_context(model, host_map),
+                            mihomo_only=mihomo_only, renderer=load_subscription_renderer())
 
 
 def _write_subscriptions(rendered: list[dict], *, mihomo_only: bool = False) -> list[dict]:
@@ -1016,6 +969,28 @@ def render_web(model: Model) -> list[dict[str, str]]:
     )
     project_path("web", "generated", "subscriptions.ts").unlink(missing_ok=True)
     return _write_subscriptions(rendered)
+
+
+def prepare_web(model: Model) -> None:
+    """Package private refresh inputs without fetching upstreams or shipping the root seed."""
+    import uuid
+
+    if model.config.web_password is None:
+        raise ValueError("web.password is required to build the website")
+    password_hash = hashlib.sha256(model.config.web_password.encode()).hexdigest()
+    context = subscription_context(model)
+    context["routes"] = [
+        {key: route[key] for key in ("id", "name", "kind", "server", "entry", "exit", "connect")}
+        for route in context["routes"]
+    ]
+    context["password_hash"] = password_hash
+    config = {key: getattr(model.config, key) for key in (
+        "upstream_urls", "extend_proxies", "proxy_providers", "proxy_groups", "exit_providers", "pools",
+    )}
+    bootstrap = {"passwordHash": password_hash, "poolIds": list(model.config.pools), "buildId": uuid.uuid4().hex}
+    _write_private(project_path("web", "generated", "input.json"), json.dumps({"config": config, "context": context}))
+    _write_private(project_path("web", "generated", "bootstrap.ts"),
+                   "import 'server-only';\nexport const bootstrap = " + json.dumps(bootstrap) + ";\n")
 
 
 def load_model(*, require_ssh: bool = False) -> Model:

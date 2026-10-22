@@ -48,7 +48,7 @@ def compile_snapshot(config, profiles: list[dict], context: dict) -> dict:
     # Only pool membership is request-filterable in this version.
     return {
         "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "passwordHash": hashlib.sha256(config.web_password.encode()).hexdigest(),
+        "passwordHash": context.get("password_hash") or hashlib.sha256(config.web_password.encode()).hexdigest(),
         "exits": [{"name": name, "nodes": members(name)} for name in config.exit_providers],
         "pools": pools,
         "otherNodes": [] if config.exit_providers else [metadata(node) for node in proxies if node["name"] not in pool_nodes],

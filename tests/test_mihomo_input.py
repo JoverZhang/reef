@@ -552,7 +552,7 @@ class MihomoInputTests(unittest.TestCase):
         before = self.artifacts()
         with (
             patch.object(upstream, "urlopen", return_value=self.response()) as fetch,
-            patch.object(core, "quantumult_x_nodes", side_effect=AssertionError("QX must not run")),
+            patch("subscriptions.compiler.quantumult_x_nodes", side_effect=AssertionError("QX must not run")),
         ):
             profiles = self.generate(self.relay_config(), mihomo_only=True)
         self.assertEqual(fetch.call_count, 1)
@@ -576,7 +576,7 @@ class MihomoInputTests(unittest.TestCase):
             original = self.generate()
         with (
             patch.object(upstream, "urlopen", return_value=self.response()) as fetch,
-            patch.object(core, "quantumult_x_nodes", side_effect=AssertionError("QX must not run")),
+            patch("subscriptions.compiler.quantumult_x_nodes", side_effect=AssertionError("QX must not run")),
         ):
             profiles = self.generate(self.relay_config())
         self.assertEqual(fetch.call_count, 1)

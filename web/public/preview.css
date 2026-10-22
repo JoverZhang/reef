@@ -1,5 +1,6 @@
 :root { color-scheme: light; --ink: #172b32; --muted: #60727a; --accent: #076e65; --line: #dbe4e3; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: #f5f8f7; color: var(--ink); font: 15px/1.6 system-ui, sans-serif; }
 main { max-width: 1140px; margin: auto; padding: 0 32px; }
 header { display: flex; align-items: center; justify-content: space-between; padding: 24px 0; border-bottom: 1px solid var(--line); }
@@ -14,6 +15,20 @@ p { margin: 8px 0; }
 .intro > p:not(.eyebrow), .hint, .snapshot { color: var(--muted); }
 .snapshot, .hint { font-size: 12px; }
 .snapshot { margin-top: 20px; font-variant-numeric: tabular-nums; }
+.refresh-bar { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+#refresh-status { color: #854614; font-size: 13px; overflow-wrap: anywhere; }
+.tabs { display: flex; gap: 8px; margin-top: 20px; }
+.tabs button { background: transparent; color: var(--accent); }
+.tabs button[aria-pressed="true"] { background: var(--accent); color: white; }
+.rule-order, .rule-lines { font: 12px/1.8 ui-monospace, monospace; overflow-wrap: anywhere; padding-left: 40px; }
+.rule-order.card { margin-bottom: 30px; padding-left: 40px; }
+.rule-resource { margin: 12px 0; }
+.rule-resource summary { cursor: pointer; }
+.rule-resource summary span { display: inline-block; color: var(--muted); margin-left: 14px; font-size: 12px; }
+.rule-search, .pagination { display: flex; gap: 12px; align-items: center; }
+.rule-search { margin-top: 14px; }
+.rule-lines { max-height: 420px; overflow-y: auto; }
+.rule-status, .page-label { color: var(--muted); font-size: 12px; }
 .toolbar { display: flex; align-items: center; gap: 14px; padding: 20px 0; border-bottom: 1px solid var(--line); }
 .toolbar label { font-weight: 600; }
 select, input, button, .download { font: inherit; border-radius: 7px; }
@@ -57,4 +72,7 @@ footer { padding: 8px 0 28px; color: var(--muted); font-size: 12px; }
   .cards { grid-template-columns: minmax(0, 1fr); }
   .result { padding: 18px; }
   .actions { gap: 12px; }
+  .refresh-bar { flex-wrap: wrap; gap: 8px; }
+  .rule-search input { min-width: 0; }
+  .pagination { flex-wrap: wrap; }
 }

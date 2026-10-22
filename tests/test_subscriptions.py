@@ -266,15 +266,14 @@ class SubscriptionTests(unittest.TestCase):
                     self.assertEqual(render_cli.main(), 0)
                 self.assertEqual(state["requests"], 1)
                 self.assertEqual(second_state["requests"], 1)
-                web_file = project_path("web", "generated", "snapshot.ts")
-                items = json.loads(
-                    web_file.read_text().split("snapshot: Snapshot = ", 1)[1].rstrip(";\n")
-                )
-                self.assertEqual(items["proxies"][-len(self.proxies):], self.proxies)
-                self.assertEqual(items["qx"]["body"], project_path("build", "subscriptions", "quantumult-x.conf").read_text())
-                self.assertNotIn("TUIC", items["qx"]["body"])
+                web_file = project_path("web", "generated", "input.json")
+                self.assertEqual(json.loads(web_file.read_text())["config"]["upstream_urls"], [url, second_url])
+                client = yaml.safe_load(project_path("build", "subscriptions", "client.yaml").read_text())
+                qx = project_path("build", "subscriptions", "quantumult-x.conf").read_text()
+                self.assertEqual(client["proxies"][-len(self.proxies):], self.proxies)
+                self.assertNotIn("TUIC", qx)
                 for proxy in self.proxies[:-1]:
-                    self.assertIn(f"tag={proxy['name']}", items["qx"]["body"])
+                    self.assertIn(f"tag={proxy['name']}", qx)
                 second_state["body"] = yaml.safe_dump(
                     {"proxies": [{**self.proxies[4], "password": "changed-password"}]}
                 ).encode()

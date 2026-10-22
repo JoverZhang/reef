@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   logging: false,
+  outputFileTracingIncludes: { "/*": ["./generated/input.json", "./generated/runtime/**/*"] },
   async headers() {
     return [{ source: "/:path*", headers: [
       { key: "Cache-Control", value: "no-store" },
