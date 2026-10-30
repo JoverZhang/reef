@@ -54,9 +54,13 @@ export function selectModel(snapshot, params) {
   const qx = type === "qx" && snapshot.qx.relay ? {
     ...snapshot.qx.relay,
     nodes: snapshot.qx.relay.nodes.filter(node => !poolNodes.has(node.sourceName) || selectedNodes.has(node.sourceName)),
-    policies: snapshot.qx.relay.policies.map(policy => ({
-      ...policy, members: poolGroups.get(policy.name) ?? [...policy.members],
-    })),
+    policies: snapshot.qx.relay.policies.map(policy => {
+      const members = poolGroups.get(policy.name) ??
+        (policy.name.startsWith("AUTO | ") ? poolGroups.get("POOL | " + policy.name.slice(7)) : undefined);
+      return { ...policy, members: members
+        ? policy.members.filter(name => !poolNodes.has(name) || members.includes(name))
+        : [...policy.members] };
+    }),
   } : null;
   if (qx) {
     const known = new Set(["direct", "reject", ...qx.nodes.map(node => node.name), ...qx.policies.map(policy => policy.name)]);

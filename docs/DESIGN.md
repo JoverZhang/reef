@@ -670,8 +670,13 @@ same exit address by node tag:
 - `RELAY | <exit name>` selects any relay-enabled pool or `direct`. The first
   enabled pool is the default, or `direct` when no pools allow relaying.
   Direct is never a failure fallback.
-- Each `POOL | <pool name>` automatically selects one compatible member. This
-  group is shared between exits and can itself be selected in `Reef`.
+- Each `POOL | <pool name>` is a manual `static` selector listing compatible
+  nodes first, followed by `AUTO | <pool name>`. Selecting a node pins that node;
+  automatic probes never replace a manual selection. Selecting AUTO explicitly
+  delegates to a separate `url-latency-benchmark` policy over the same pool.
+  Both policies use the same request-time pool filter. The POOL selector is shared
+  between exits and can itself be selected in `Reef`. There is no automatic
+  fallback from a manually selected node to AUTO or direct.
 
 An EXIT with one compatible endpoint is a node. With multiple compatible
 endpoints it is a `url-latency-benchmark` group. Unsupported protocols/options

@@ -131,8 +131,10 @@ def compile_relay(context: dict, exits: list[str], pools: list[str], profile: di
     for name in pools:
         for node in memberships[name]:
             add_node(node, node["name"], "pool", "direct")
-        groups.append({"name": f"POOL | {name}", "type": "url-test",
-                       "proxies": [node["name"] for node in memberships[name]]})
+        members = [node["name"] for node in memberships[name]]
+        automatic = f"AUTO | {name}"
+        groups.append({"name": f"POOL | {name}", "type": "select", "proxies": members + [automatic]})
+        groups.append({"name": automatic, "type": "url-test", "proxies": members})
 
     converted = quantumult_x_nodes(nodes)
     if len(converted) != len(nodes):

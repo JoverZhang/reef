@@ -46,7 +46,7 @@ export function choicesHtml(preview, params) {
     <ul class="choices">${preview.choices.map(choice => `<li>${escape(choice)}</li>`).join("")}</ul>
     ${preview.relays.length ? `<div class="cards">${preview.relays.map(relay => `<article class="card"><h3>${escape(relay.name)}</h3>
       <ul class="choices">${relay.choices.map(choice => `<li>${escape(choice)}</li>`).join("")}</ul></article>`).join("")}</div>
-      <p class="hint">Pools and exits with multiple compatible protocols choose nodes automatically. Verify both relay hops in QX network activity; endpoint latency alone does not validate the complete path.</p>` : ""}
+      <p class="hint">In each POOL, select a node manually or select AUTO for automatic selection. Manual selections stay pinned. Exits with multiple compatible protocols choose automatically. Verify both relay hops in QX network activity; endpoint latency alone does not validate the complete path.</p>` : ""}
     <div id="selection-errors" class="errors" role="alert"${preview.errors.length ? "" : " hidden"}><strong>Export unavailable</strong><ul>${preview.errors.map(error => `<li>${escape(error)}</li>`).join("")}</ul></div>
     <div class="actions"><button type="button" id="copy-link" data-path="${escape(path)}"${preview.errors.length ? " disabled" : ""}>Copy subscription URL</button>
       <a id="download" class="download"${preview.errors.length ? ' aria-disabled="true"' : ` href="${escape(path)}"`} download="${preview.type === "qx" ? "quantumult-x.conf" : `${preview.type}.yaml`}">Download configuration</a>

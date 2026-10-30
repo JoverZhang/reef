@@ -250,13 +250,30 @@ class WebSnapshotTests(unittest.TestCase):
         self.assertTrue(all("force-policy=direct" in line for line in sections["filter_remote"]))
         self.assertNotIn("resource_parser_url", body)
 
+    def test_qx_pools_offer_manual_nodes_before_explicit_auto_selection(self):
+        policies = {policy["name"]: policy for policy in self.snapshot["qx"]["relay"]["policies"]}
+        for pool in self.snapshot["pools"]:
+            members = [node["name"] for node in pool["nodes"] if node["qxSupported"]]
+            manual, automatic = policies[pool["group"]], policies["AUTO | " + pool["name"]]
+            self.assertEqual(manual["kind"], "static")
+            self.assertEqual(manual["members"], members + [automatic["name"]])
+            self.assertEqual(manual["options"], [])
+            self.assertEqual(automatic["kind"], "url-latency-benchmark")
+            self.assertEqual(automatic["members"], members)
+            self.assertNotIn("direct", manual["members"])
+        for policy in policies.values():
+            if policy["name"].startswith("RELAY | "):
+                self.assertFalse(any(member.startswith("AUTO | ") for member in policy["members"]))
+
     def test_qx_filters_shared_nodes_independently_without_mutating_the_snapshot(self):
         all_nodes = self.request({"type": "qx"}, download=True)
         result = self.request({"type": "qx", "include1": "Alpha", "include7": "Beta"}, download=True)
         body = result["body"]
         self.assertEqual(result["status"], 200)
-        self.assertIn("url-latency-benchmark=POOL | pool-a, source-a | Alpha 01, check-interval", body)
-        self.assertIn("url-latency-benchmark=POOL | pool-b, source-a | Beta 02, check-interval", body)
+        self.assertIn("static=POOL | pool-a, source-a | Alpha 01, AUTO | pool-a\n", body)
+        self.assertIn("url-latency-benchmark=AUTO | pool-a, source-a | Alpha 01, check-interval", body)
+        self.assertIn("static=POOL | pool-b, source-a | Beta 02, AUTO | pool-b\n", body)
+        self.assertIn("url-latency-benchmark=AUTO | pool-b, source-a | Beta 02, check-interval", body)
         self.assertNotIn("Gamma 03", body)
         self.assertEqual(body.count("tag=source-a | Alpha 01"), 1)
         self.assertEqual(all_nodes, self.request({"type": "qx"}, download=True))
