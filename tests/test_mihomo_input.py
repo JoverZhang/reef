@@ -382,7 +382,7 @@ class MihomoInputTests(unittest.TestCase):
                      "port": 8443, "password": "test-password"},
                 ]},
             },
-            "exits": ["Endpoint A", "Endpoint B"], "pools": {1: "pool-a", 2: "pool-b"},
+            "exits": ["Endpoint A", "Endpoint B"], "pools": {1: {"name": "pool-a", "relay": True}, 2: {"name": "pool-b", "relay": True}},
         }
 
     def test_single_endpoint_paths_are_nodes_in_both_profiles(self):
@@ -392,7 +392,7 @@ class MihomoInputTests(unittest.TestCase):
                 "pool-a": {"type": "inline", "payload": [NODES[0]]},
                 "Endpoint A": {"type": "inline", "payload": [LOCAL]},
             },
-            "exits": ["Endpoint A"], "pools": {1: "pool-a"},
+            "exits": ["Endpoint A"], "pools": {1: {"name": "pool-a", "relay": True}},
         }
         for profile in self.generate(config, mihomo_only=True):
             doc = yaml.safe_load(profile["body"])
@@ -422,7 +422,7 @@ class MihomoInputTests(unittest.TestCase):
             ])
             self.assertEqual([g["name"] for g in groups.values() if g["type"] == "select"], ["PROXY"])
             for endpoint in config["exits"]:
-                pools = list(config["pools"].values())
+                pools = [pool["name"] for pool in config["pools"].values()]
                 spec = config["proxy-providers"][endpoint]
                 for pool in [*pools, None]:
                     path = f"RELAY | {endpoint} | {pool}" if pool else f"DIRECT | {endpoint}"
@@ -491,10 +491,10 @@ class MihomoInputTests(unittest.TestCase):
         for changes in (
             {"exits": None}, {"exits": []}, {"exits": ["private-exit"]},
             {"exits": ["pool-a"]}, {"exits": ["Endpoint A", "Endpoint A"]},
-            {"pools": None}, {"pools": {}}, {"pools": {1: "private-pool"}},
-            {"pools": {1: "Endpoint A"}}, {"pools": {1: "pool-a", 2: "pool-a"}},
-            {"pools": {0: "pool-a"}}, {"pools": {"01": "pool-a"}},
-            {"pools": {1: "pool-a", "1": "pool-b"}}, {"pools": {True: "pool-a"}},
+            {"pools": None}, {"pools": {}}, {"pools": {1: {"name": "private-pool", "relay": True}}},
+            {"pools": {1: {"name": "Endpoint A", "relay": True}}}, {"pools": {1: {"name": "pool-a", "relay": True}, 2: {"name": "pool-a", "relay": True}}},
+            {"pools": {0: {"name": "pool-a", "relay": True}}}, {"pools": {"01": {"name": "pool-a", "relay": True}}},
+            {"pools": {1: {"name": "pool-a", "relay": True}, "1": {"name": "pool-b", "relay": True}}}, {"pools": {True: {"name": "pool-a", "relay": True}}},
             {"relay": {"private-exit": ["pool-a"]}},
         ):
             config = {**self.automatic_relay_config(), **changes}

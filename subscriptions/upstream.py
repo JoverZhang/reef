@@ -11,13 +11,13 @@ from subscriptions.substore import convert
 
 
 def load_nodes(
-    urls: list[str], extend_proxies: list[dict[str, Any]] | None = None
+    urls: list[str], extend_proxies: list[dict[str, Any]] | None = None, *, tunnel: dict | None = None
 ) -> list[dict[str, Any]]:
     nodes = []
     names = set()
     for source_index, url in enumerate(urls, start=1):
         source = f"upstream URL #{source_index}"
-        fetched = fetch_nodes(url, source)
+        fetched = fetch_nodes(url, source, tunnel=tunnel)
         validate_nodes(fetched, source, names)
         nodes.extend(fetched)
     if extend_proxies:
@@ -26,11 +26,15 @@ def load_nodes(
     return nodes
 
 
-def fetch_nodes(url: str, source: str) -> list[dict[str, Any]]:
+def fetch_nodes(url: str, source: str, *, tunnel: dict | None = None) -> list[dict[str, Any]]:
     try:
-        request = Request(url, headers={"User-Agent": "clash.meta", "Accept": "text/yaml"})
-        with urlopen(request, timeout=30) as response:
-            body = response.read()
+        if tunnel is not None:
+            from subscriptions.tunnel import fetch
+            body = fetch(url, tunnel)
+        else:
+            request = Request(url, headers={"User-Agent": "clash.meta", "Accept": "text/yaml"})
+            with urlopen(request, timeout=30) as response:
+                body = response.read()
     except (OSError, ValueError, HTTPException):
         # Network errors can include the private subscription URL.
         raise ValueError(f"{source} fetch failed") from None

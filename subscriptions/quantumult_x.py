@@ -79,7 +79,8 @@ def serialize(plan: dict) -> str:
     return "\n\n".join(f"[{key}]\n" + "\n".join(lines) for key, lines in sections.items()) + "\n"
 
 
-def compile_relay(context: dict, exits: list[str], pools: list[str], profile: dict, renderer) -> tuple[dict, dict]:
+def compile_relay(context: dict, exits: list[str], pools: list[str], profile: dict, renderer,
+                  relay_pools: list[str]) -> tuple[dict, dict]:
     providers = context["provider_members"]
     by_name = {node["name"]: node for node in context["provider_nodes"]}
     memberships = {}
@@ -125,7 +126,8 @@ def compile_relay(context: dict, exits: list[str], pools: list[str], profile: di
             add_node(node, tag, endpoint, f"RELAY | {name}")
         if len(names) > 1:
             groups.append({"name": endpoint, "type": "url-test", "proxies": names})
-    groups.extend({"name": f"RELAY | {name}", "type": "select", "proxies": pool_groups + ["DIRECT"]} for name in exits)
+    relay_groups = [f"POOL | {name}" for name in pools if name in relay_pools]
+    groups.extend({"name": f"RELAY | {name}", "type": "select", "proxies": relay_groups + ["DIRECT"]} for name in exits)
     for name in pools:
         for node in memberships[name]:
             add_node(node, node["name"], "pool", "direct")

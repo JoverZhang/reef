@@ -15,7 +15,8 @@ from subscriptions import substore
 
 def refresh(payload: dict) -> dict:
     config = SimpleNamespace(**payload["config"])
-    profiles, context = compile_profiles(config, payload["context"], hosted_rules=True)
+    profiles, context = compile_profiles(config, payload["context"], hosted_rules=True,
+                                         tunnel=payload.get("fetch_tunnel"))
     snapshot = compile_snapshot(config, profiles, context)
     compile_resources(snapshot)
     snapshot["updatedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()

@@ -68,15 +68,17 @@ proxy-providers:
         skip-cert-verify: false
         udp: true
 
-# Every exit is paired with every pool. Names follow provider display names.
+# Every exit is paired with every relay-enabled pool. Names follow provider display names.
 # Keep pool IDs stable: include1 always filters pool-a, regardless of map order.
 exits: [Endpoint A, Endpoint B]
 pools:
-  1: pool-a
-  2: pool-b
-  3: pool-c
+  1: {name: pool-a, relay: true}
+  2: {name: pool-b}
+  3: {name: pool-c, relay: true}
 
-# PROXY offers RELAY | Endpoint A | pool-a, pool-b, pool-c, then DIRECT | Endpoint A.
+# Omitting relay (or setting it to false) makes pool-b a final exit only.
+
+# PROXY offers RELAY | Endpoint A | pool-a and pool-c, then DIRECT | Endpoint A.
 # Each Endpoint A path is a single proxy, without an extra group.
 # Endpoint B paths follow the same naming rule and use automatic protocol groups.
 # Each RELAY path points directly to its POOL; PROXY is the only manual selector.

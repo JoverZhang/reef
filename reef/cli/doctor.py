@@ -6,6 +6,7 @@ import sys
 from pathlib import PurePosixPath
 
 from reef.core import REMOTE_DIR, ROOT, load_model, provider_runtimes, routes_for_node
+from reef.tunnel import PORT as TUNNEL_PORT
 
 
 def run(cmd: list[str]) -> None:
@@ -64,6 +65,12 @@ for check in {check_list}; do
   fi
   rows="$(ss -H -ln$flags "sport = :$port" 2>/dev/null || true)"
   if [ -n "$rows" ]; then
+    if [ "$port" = "{TUNNEL_PORT}" ]; then
+      tunnel_pid="$(systemctl show reef-fetch-tunnel.service --property=MainPID --value 2>/dev/null || true)"
+      if [ -n "$tunnel_pid" ] && [ "$tunnel_pid" != "0" ] && ss -H -lntp "sport = :$port" | grep -q "pid=$tunnel_pid,"; then
+        continue
+      fi
+    fi
     proc="$(ss -H -ln${{flags}}p "sport = :$port" 2>/dev/null || true)"
     if printf '%s\\n' "$proc" | grep -Eq 'transport|sing-box'; then
       reef_owned=""
@@ -110,6 +117,8 @@ def _port_checks(model, node) -> set[tuple[str, int]]:
                     f"{provider['id']} route_protocols.{route.kind} must be tcp or udp"
                 )
             checks.add((protocol, route.port))
+    if node.id == model.config.fetch_tunnel:
+        checks.add(("tcp", TUNNEL_PORT))
     return checks
 
 

@@ -76,9 +76,11 @@ validating proxy/group relay dependencies, and converting supported selection
 policies to Quantumult X. HTTP collections can combine named upstreams; shared
 URLs use one fetch per generation and the names prefix the selected nodes.
 Ordered `exits` and stable-ID `pools` generate all direct/relayed endpoint
-copies and groups from provider display names. Every exit/pool path appears in
-`PROXY`; single-endpoint paths use proxies and multi-endpoint paths use automatic
-groups. `subscriptions/extension.py` owns legacy standalone VLESS normalization.
+copies and groups from provider display names. Every relay-enabled exit/pool path
+appears in `PROXY`; single-endpoint paths use proxies and multi-endpoint paths use automatic
+groups. Each pool's `relay` flag enables intermediate choices while every pool
+remains selectable as a final exit. `subscriptions/extension.py` owns legacy
+standalone VLESS normalization.
 `subscriptions/upstream.py` owns fetching and QX compatibility; the pinned offline
 Sub-Store adapter owns supported QX node conversion.
 `subscriptions/quantumult_x.py` compiles automatic exits/pools into QX's separate
@@ -114,6 +116,10 @@ Snapshot, baseline and any history entry are published atomically under the same
 refresh lock. Unchanged updates never append or trim history.
 `web/lib/runtime.ts` invokes the bundled compiler with private stdin and
 suppressed stderr. Only a complete successful refresh replaces shared data.
+`subscriptions/tunnel.py` uses HTTPS CONNECT with independent proxy and target
+TLS trust. `reef/tunnel.py` renders the optional node service;
+`reef/tunnel_server.py` forwards opaque bytes using the node's system Python 3.
+The tunnel has no compiler inputs or subscription response plaintext.
 
 `web/lib/subscription.ts` owns authentication, the safe metadata projection and
 dump serialization. `web/public/selection.js` owns query parsing and graph

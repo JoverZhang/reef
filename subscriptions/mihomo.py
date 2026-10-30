@@ -136,7 +136,7 @@ def validate_input(values: dict[str, Any]) -> None:
         if not isinstance(exits, list) or not exits:
             raise ValueError("exits must be a nonempty list of inline provider names")
         if not isinstance(pools, dict) or not pools:
-            raise ValueError("pools must be a nonempty mapping of stable numeric IDs to provider names")
+            raise ValueError("pools must be a nonempty mapping of stable numeric IDs to pool objects")
         if groups:
             raise ValueError("exits/pools cannot be combined with explicit proxy-groups")
         for index, name in enumerate(exits, start=1):
@@ -156,10 +156,14 @@ def validate_input(values: dict[str, Any]) -> None:
             if type(key) not in (int, str) or not re.fullmatch(r"[1-9][0-9]*", str(key)) or str(key) in ids:
                 raise ValueError("pools requires unique positive numeric IDs without leading zeros")
             ids.add(str(key))
-            _name(pool, "pool provider")
-            if pool not in providers or pool in exits:
+            if not isinstance(pool, dict) or set(pool) - {"name", "relay"}:
+                raise ValueError("pool must be a mapping containing only name and relay")
+            _name(pool.get("name"), "pool provider")
+            if type(pool.get("relay", False)) is not bool:
+                raise ValueError("pool relay must be a boolean")
+            if pool["name"] not in providers or pool["name"] in exits:
                 raise ValueError("pool must reference an existing non-exit provider")
-        if len(set(pools.values())) != len(pools):
+        if len({pool["name"] for pool in pools.values()}) != len(pools):
             raise ValueError("pools contains duplicate provider names")
 
 
@@ -171,7 +175,7 @@ def provider_upstreams(spec: dict) -> list[dict]:
 
 def load_providers(
     specs: dict[str, dict], exits: list[str] | None = None,
-    *, original_names: dict[str, dict[str, str]] | None = None,
+    *, original_names: dict[str, dict[str, str]] | None = None, tunnel: dict | None = None,
 ) -> tuple[list[dict], dict[str, list[str]]]:
     nodes: dict[str, dict] = {}
     members = {}
@@ -189,7 +193,7 @@ def load_providers(
             if spec["type"] == "http":
                 url = source["url"]
                 if url not in cache:
-                    cache[url] = fetch_nodes(url, f"upstream URL #{len(cache) + 1} ({label})")
+                    cache[url] = fetch_nodes(url, f"upstream URL #{len(cache) + 1} ({label})", tunnel=tunnel)
                 candidates = cache[url]
             else:
                 candidates = spec["payload"]
@@ -229,6 +233,7 @@ def load_providers(
 
 def relay_groups(
     nodes: list[dict], providers: dict[str, list[str]], exits: list[str], pools: list[str],
+    relay_pools: list[str],
 ) -> tuple[list[dict], list[dict]]:
     by_name = {node["name"]: node for node in nodes}
     exit_names = {name for provider in exits for name in providers[provider]}
@@ -237,7 +242,7 @@ def relay_groups(
     groups = [{"name": "PROXY", "type": "select", "proxies": choices}]
     for name in exits:
         endpoints = providers[name]
-        paths = [(f"RELAY | {name} | {pool}", f"POOL | {pool}") for pool in pools]
+        paths = [(f"RELAY | {name} | {pool}", f"POOL | {pool}") for pool in pools if pool in relay_pools]
         paths.append((f"DIRECT | {name}", None))
         for path, dialer in paths:
             members = []

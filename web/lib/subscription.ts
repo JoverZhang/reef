@@ -10,7 +10,7 @@ export type NodeInfo = {
   protocol: string;
   qxSupported: boolean;
 };
-type Pool = { id: string; name: string; group: string; nodes: NodeInfo[] };
+type Pool = { id: string; name: string; group: string; relay?: boolean; nodes: NodeInfo[] };
 type Proxy = { name: string; type: string; "dialer-proxy"?: string; [key: string]: unknown };
 type Group = { name: string; type: string; proxies: string[]; [key: string]: unknown };
 type QxRelay = {
@@ -79,7 +79,7 @@ export function selectionModel(snapshot: Snapshot): SelectionModel {
   return {
     updatedAt: snapshot.updatedAt,
     exits: snapshot.exits.map(exit => ({ name: exit.name, nodes: exit.nodes.map(node) })),
-    pools: snapshot.pools.map(pool => ({ id: pool.id, name: pool.name, group: pool.group, nodes: pool.nodes.map(node) })),
+    pools: snapshot.pools.map(pool => ({ id: pool.id, name: pool.name, group: pool.group, relay: pool.relay, nodes: pool.nodes.map(node) })),
     otherNodes: snapshot.otherNodes.map(node),
     proxies: snapshot.proxies.map(proxy => ({ name: proxy.name, type: proxy.type,
       ...(proxy["dialer-proxy"] ? { "dialer-proxy": proxy["dialer-proxy"] } : {}) })),

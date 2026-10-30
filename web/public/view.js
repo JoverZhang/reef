@@ -25,8 +25,9 @@ export function inventoryHtml(preview) {
       return `<article class="card"><h3>${escape(exit.name)}</h3><p class="hint">${count === 0 ? "No compatible endpoint" : count === 1 ? "One protocol · single endpoint" : "Multiple protocols · automatic selection"}</p>
         <ul class="nodes">${exit.nodes.map(node => nodeRow(node, preview.type)).join("")}</ul></article>`;
     }).join("")}</div></section>` : ""}
-    ${preview.pools.length ? `<section><div class="section-title"><h2>Relay pools</h2><span>Also available as direct exits</span></div>
+    ${preview.pools.length ? `<section><div class="section-title"><h2>Pools</h2><span>Available as final exits</span></div>
       <div class="cards">${preview.pools.map(pool => `<article class="card pool" data-pool="${escape(pool.id)}">
+        <p class="hint">${pool.relay === false ? "Exit only" : "Relay and exit"}</p>
         <div class="pool-heading"><h3>${escape(pool.name)}</h3><span class="count">${pool.selected.length} / ${pool.nodes.length}</span></div>
         <label class="filter-label" for="include${pool.id}">Include names</label>
         <input id="include${pool.id}" name="include${pool.id}" value="${escape(pool.filter)}" placeholder="All nodes, or comma-separated names" autocomplete="off" spellcheck="false">

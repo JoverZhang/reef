@@ -75,8 +75,9 @@ class Config:
     proxy_providers: dict[str, dict[str, Any]]
     proxy_groups: list[dict[str, Any]]
     exit_providers: list[str]
-    pools: dict[str, str]
+    pools: dict[str, dict[str, Any]]
     web_password: str | None
+    fetch_tunnel: str | None = None
 
 
 @dataclass(frozen=True)
@@ -187,8 +188,12 @@ def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config
     if not isinstance(secret, str) or not SECRET_RE.fullmatch(secret):
         raise ValueError("secret must be a string of exactly 64 lowercase hex characters")
     web_password = None
+    fetch_tunnel = None
     if "web" in values:
-        web = _config_mapping(values["web"], {"password"}, "web")
+        web = _config_mapping(values["web"], {"password", "fetch_tunnel"}, "web")
+        fetch_tunnel = web.get("fetch_tunnel")
+        if "fetch_tunnel" in web and (not isinstance(fetch_tunnel, str) or not fetch_tunnel):
+            raise ValueError("web.fetch_tunnel must name an existing cluster node")
         web_password = web.get("password")
         if (not isinstance(web_password, str) or len(web_password) < 32
                 or any(c.isspace() or ord(c) < 32 for c in web_password)):
@@ -217,8 +222,22 @@ def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config
     if len(set(names)) != len(names):
         raise ValueError("cluster node names must be unique")
 
+    if fetch_tunnel is not None:
+        from reef.tunnel import validate_sources
+        if fetch_tunnel not in names:
+            raise ValueError("web.fetch_tunnel must name an existing cluster node")
+        validate_sources(upstream_urls, proxy_providers)
+
     entry_port_base = _parse_port(cluster.get("entry_port_base", 20000), "cluster.entry_port_base")
     exit_port = _parse_port(cluster.get("exit_port", 443), "cluster.exit_port")
+    if fetch_tunnel is not None:
+        from reef.tunnel import PORT
+        node = next(n for n in [*entries, *exits] if n.id == fetch_tunnel)
+        if ipaddress.ip_address(node.ip).version != 4:
+            raise ValueError("web.fetch_tunnel requires a cluster node with an IPv4 address")
+        if ((node.role == "exit" and exit_port == PORT) or
+                (node.role == "entry" and entry_port_base <= PORT < entry_port_base + len(exits))):
+            raise ValueError("web.fetch_tunnel port conflicts with a cluster route")
     ssh_key = values.get("ssh_private_key")
     if "ssh_private_key" in values:
         validate_ssh_private_key(ssh_key)
@@ -238,8 +257,10 @@ def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config
         proxy_providers=proxy_providers,
         proxy_groups=values.get("proxy-groups", []),
         exit_providers=values.get("exits", []),
-        pools={str(key): name for key, name in values.get("pools", {}).items()},
+        pools={str(key): {"name": pool["name"], "relay": pool.get("relay", False)}
+               for key, pool in values.get("pools", {}).items()},
         web_password=web_password,
+        fetch_tunnel=fetch_tunnel,
     )
 
 
@@ -678,6 +699,9 @@ def render_node_files(
                 add(rel, dest, template.render(ctx), spec.get("mode", "0644"))
 
     services = service_names_for_node(model, node)
+    if node.id == model.config.fetch_tunnel:
+        from reef.tunnel import render_service
+        render_service(model, node, add)
     runtime_manifest = []
     deploy_runtimes = []
     for provider in model.providers:
@@ -841,6 +865,8 @@ def service_names_for_node(model: Model, node: Node) -> list[str]:
                 services.append(
                     _render_inline(str(template), context)
                 )
+    if node.id == model.config.fetch_tunnel:
+        services.append("reef-fetch-tunnel.service")
     return services
 
 
@@ -858,7 +884,8 @@ def _compile_subscriptions(
 
     host_map = _load_json_file(host_map_path or _env_path("TEST_HOST_MAP"))
     return compile_profiles(model.config, subscription_context(model, host_map),
-                            mihomo_only=mihomo_only, renderer=load_subscription_renderer())
+                            mihomo_only=mihomo_only, renderer=load_subscription_renderer(),
+                            tunnel=fetch_tunnel_input(model))
 
 
 def _write_subscriptions(rendered: list[dict], *, mihomo_only: bool = False) -> list[dict]:
@@ -971,6 +998,13 @@ def render_web(model: Model) -> list[dict[str, str]]:
     return _write_subscriptions(rendered)
 
 
+def fetch_tunnel_input(model: Model) -> dict | None:
+    if model.config.fetch_tunnel is None:
+        return None
+    from reef.tunnel import client_input
+    return client_input(model)
+
+
 def prepare_web(model: Model) -> None:
     """Package private refresh inputs without fetching upstreams or shipping the root seed."""
     import uuid
@@ -988,7 +1022,7 @@ def prepare_web(model: Model) -> None:
         "upstream_urls", "extend_proxies", "proxy_providers", "proxy_groups", "exit_providers", "pools",
     )}
     bootstrap = {"passwordHash": password_hash, "poolIds": list(model.config.pools), "buildId": uuid.uuid4().hex}
-    _write_private(project_path("web", "generated", "input.json"), json.dumps({"config": config, "context": context}))
+    _write_private(project_path("web", "generated", "input.json"), json.dumps({"config": config, "context": context, "fetch_tunnel": fetch_tunnel_input(model)}))
     _write_private(project_path("web", "generated", "bootstrap.ts"),
                    "import 'server-only';\nexport const bootstrap = " + json.dumps(bootstrap) + ";\n")
 

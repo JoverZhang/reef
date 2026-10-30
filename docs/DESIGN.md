@@ -394,8 +394,8 @@ are loaded in pages. Only actual diffs count toward the 50-entry retention limit
 Web latency probing and relay-to-exit latency matrices are out of scope.
 The production page does not display simulated measurements.
 
-Every exit is paired with every pool. Path compilation and validation happen on
-snapshot refresh; requests select pool memberships from the compiled graph and
+Every exit is paired with every relay-enabled pool. Path compilation and
+validation happen on snapshot refresh; requests select pool memberships from the compiled graph and
 serialize only the selected nodes. Shared nodes survive when selected by another pool, while each pool
 retains its own filtered membership. Static settings are identical to the existing
 profile templates. A displayed path is a configuration option, not proof of live
@@ -456,11 +456,19 @@ This first version accepts:
   With no custom groups or automatic exit/pool configuration, the existing `PROXY` and `AUTO`
   defaults remain.
 - `exits`: an optional nonempty ordered list of inline provider names.
-- `pools`: a nonempty mapping from stable positive numeric IDs to provider names,
-  configured together with `exits`. IDs may be quoted or unquoted in YAML; they
+- `pools`: a nonempty mapping from stable positive numeric IDs to objects with
+  required `name` (a provider name) and optional boolean `relay` (default `false`),
+  configured together with `exits`. Unknown pool fields are rejected.
+  IDs may be quoted or unquoted in YAML; they
   cannot have leading zeros or be reused. Provider names cannot repeat. Reordering
   this mapping does not change which collection an `includeN` parameter filters.
   Explicit `proxy-groups` cannot be combined with automatic exits/pools.
+  Only pools with `relay: true` may act as intermediates. Relay choices follow
+  pool order. All pools remain
+  selectable as final exits and retain their stable `includeN` filters. This
+  applies to both Mihomo paths and QX RELAY selectors. Preview labels exit-only
+  pools explicitly.
+  String-valued pools and the separate `relay-pools` field are not supported.
 
 For example, each collection explicitly lists its upstream subscriptions:
 
@@ -573,17 +581,17 @@ web:
   password: "replace-with-an-independent-random-access-key"
 exits: [Endpoint A, Endpoint B]
 pools:
-  1: pool-a
-  2: pool-b
+  1: {name: pool-a, relay: true}
+  2: {name: pool-b}
 ```
 
 There is no per-exit `relay` mapping or separate display alias. Every exit uses
-every listed pool, in configuration order. All providers must exist. An exit
+every relay-enabled pool, in configuration order. All providers must exist. An exit
 cannot also be a pool and must not already set `dialer-proxy` in its payload or
 override. Pools can be inline or HTTP providers. Rename a provider key and its
 reference together; generated names follow automatically.
 
-For each exit, Reef makes one copy of its filtered endpoints for each configured
+For each exit, Reef makes one copy of its filtered endpoints for each relay-enabled
 pool, plus one direct copy. DIRECT copies have no `dialer-proxy`; each RELAY copy
 points directly to `POOL | <pool name>`. Protocol selection and probe history are
 independent for every exit/pool path and the direct path. The generated choices
@@ -653,8 +661,9 @@ selection levels because its rule-based relay cannot distinguish copies of the
 same exit address by node tag:
 
 - `Reef` selects `EXIT | <exit name>` or `POOL | <pool name>`.
-- `RELAY | <exit name>` selects any configured pool or `direct`. The first pool
-  is the default; direct is an explicit choice, never a failure fallback.
+- `RELAY | <exit name>` selects any relay-enabled pool or `direct`. The first
+  enabled pool is the default, or `direct` when no pools allow relaying.
+  Direct is never a failure fallback.
 - Each `POOL | <pool name>` automatically selects one compatible member. This
   group is shared between exits and can itself be selected in `Reef`.
 
@@ -769,7 +778,7 @@ Errors identify the source as `upstream URL #N`, numbered from 1 in fetch order
 (the order of `subscriptions.upstream_urls`), and distinguish a failed
 request, invalid response format, and an empty node list. There is no background
 poller: authenticated requests refresh expired hosted data, while internal
-subscription rendering fetches fresh nodes directly. Website builds only package
+subscription rendering fetches fresh nodes through the configured download path. Website builds only package
 inputs. Upstream URLs may contain credentials and stay in private configuration
 and server-only compiler input.
 
@@ -842,6 +851,33 @@ least one Quantumult X-compatible node across all sources.
 
 These nodes stay in the same private `config.yaml` as upstream URLs. The website
 export includes them in `CONFIG_YAML`; no separate extension Secret is needed.
+
+### Fixed-source HTTPS Downloads
+
+Optional `web.fetch_tunnel: entry-a` selects an existing IPv4 cluster node as the
+HTTPS CONNECT byte tunnel for subscription downloads. Vercel remains trusted:
+its Python compiler fetches, decrypts, parses and publishes the snapshot. The
+selected node runs a small Python 3 standard-library service on TCP 24443, managed
+by the existing Ansible lifecycle. It receives only its own TLS certificate/key
+and a purpose-separated tunnel authentication digest, never compiler input,
+subscription URLs, tokens or node snapshots.
+
+The client verifies two independent TLS connections: the outer connection uses
+the selected node's certificate, and the inner connection uses the normal public
+CA store and the subscription hostname. The node certificate is never trusted
+as an upstream CA. CONNECT forwarding exposes target hostnames, IPs, timing and
+sizes to the tunnel node; paths, queries and response bodies stay encrypted.
+Outbound connections use IPv4 to keep a single source address.
+Only HTTPS on port 443 is accepted, including redirects (at most five). Failed
+connections never fall back to direct access. HTTP sources fail configuration
+validation when a tunnel is enabled. Upstream responses are limited to 16 MiB.
+Public rule downloads and QX DNS resolution remain on the compiler host.
+
+Local subscription rendering uses the same tunnel. Deployment rendering skips
+subscription downloads so the tunnel can be installed before its first use.
+Website builds still perform no subscription downloads. Omit the setting to
+retain direct fetching. Refresh locks, snapshot publication, stale-data behavior
+and history remain unchanged. No server-side latency measurements are added.
 
 ### Website Deployment
 

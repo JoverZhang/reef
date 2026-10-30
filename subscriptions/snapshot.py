@@ -36,10 +36,10 @@ def compile_snapshot(config, profiles: list[dict], context: dict) -> dict:
                 for node in context["provider_members"][name]]
 
     pools = [{
-        "id": pool_id, "name": name,
-        "group": next(group["name"] for group in context["proxy_groups"] if group.get("use") == [name]),
-        "nodes": members(name),
-    } for pool_id, name in config.pools.items()]
+        "id": pool_id, "name": pool["name"], "relay": pool["relay"],
+        "group": next(group["name"] for group in context["proxy_groups"] if group.get("use") == [pool["name"]]),
+        "nodes": members(pool["name"]),
+    } for pool_id, pool in config.pools.items()]
     pool_nodes = {node["name"] for pool in pools for node in pool["nodes"]}
     qx_body = documents.get("quantumult-x")
     qx_policy = next((line for line in (qx_body or "").splitlines()

@@ -17,7 +17,7 @@ def main() -> int:
         render_ansible(model)
     if "web" in args.targets:
         prepare_web(model)
-    if "subscriptions" in args.targets:
+    if "subscriptions" in args.targets and not (require_ssh and model.config.fetch_tunnel):
         render_subscriptions(model)
     return 0
 

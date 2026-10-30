@@ -41,7 +41,7 @@ def bundle(root: Path) -> None:
     subprocess.run([
         sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "--target", str(packages),
         "--platform", "manylinux2014_x86_64", "--python-version", "3.12", "--only-binary=:all:",
-        "jinja2==3.1.6", "markupsafe==3.0.3", "pyyaml==6.0.3",
+        "jinja2==3.1.6", "markupsafe==3.0.3", "pyyaml==6.0.3", "urllib3==2.8.0",
     ], check=True)
     code = destination / "subscriptions"
     code.mkdir(exist_ok=True)

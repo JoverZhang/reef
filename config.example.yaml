@@ -6,6 +6,8 @@ secret: "replace_with_64_lowercase_hex_chars"
 
 # Required for website builds; keep this independent from the root secret.
 web:
+  # Optional existing cluster node for opaque HTTPS subscription downloads.
+  # fetch_tunnel: entry-a
   password: "replace-with-an-independent-random-access-key"
 
 # Optional for deployment: `just set-ssh-key ~/.ssh/id_ed25519` writes the key

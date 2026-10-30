@@ -57,13 +57,18 @@ class RuntimeRefreshTests(unittest.TestCase):
         return io.BytesIO(b"payload:\n  - DOMAIN-SUFFIX,service.example.invalid\n")
 
     def test_runtime_compiles_nodes_and_all_hosted_rules_together(self):
-        payload = self.prepare()
+        payload = self.prepare({**CONFIG, "pools": {**CONFIG["pools"], 7: {"name": "pool-b"}}})
+        self.assertEqual(payload["config"]["pools"]["7"], {"name": "pool-b", "relay": False})
         with patch.object(upstream, "urlopen", return_value=io.BytesIO(yaml.safe_dump({"proxies": NODES}).encode())) as nodes, \
                 patch.object(rules, "urlopen", side_effect=self.rule_response) as resources:
             snapshot = runtime.refresh(payload)
         self.assertEqual(nodes.call_count, 1)
         self.assertEqual(resources.call_count, 10)
         self.assertEqual(len(snapshot["resources"]), 10)
+        self.assertFalse(snapshot["pools"][1]["relay"])
+        for policy in snapshot["qx"]["relay"]["policies"]:
+            if policy["name"].startswith("RELAY |"):
+                self.assertEqual(policy["members"], ["POOL | pool-a", "direct"])
         self.assertEqual(len(snapshot["qx"]["relay"]["sections"]["filter_remote"]), 5)
         for resource in snapshot["resources"]:
             self.assertNotIn("url", resource)
@@ -76,6 +81,19 @@ class RuntimeRefreshTests(unittest.TestCase):
             self.assertTrue(provider["url"].startswith("reef-resource:"))
             self.assertEqual(provider["interval"], 3600)
         self.assertNotIn(URL, json.dumps(snapshot))
+
+    def test_runtime_uses_tunnel_for_shared_sources_without_direct_subscription_fetch(self):
+        from subscriptions import tunnel
+
+        payload = self.prepare()
+        payload["fetch_tunnel"] = {"url": "https://192.0.2.41:24443"}
+        with patch.object(tunnel, "fetch", return_value=yaml.safe_dump({"proxies": NODES}).encode()) as fetch, \
+                patch.object(upstream, "urlopen", side_effect=AssertionError("Direct subscription fetch")), \
+                patch.object(rules, "urlopen", side_effect=self.rule_response):
+            snapshot = runtime.refresh(payload)
+        fetch.assert_called_once_with(URL, payload["fetch_tunnel"])
+        self.assertNotIn("fetch_tunnel", snapshot)
+        self.assertTrue(snapshot["updatedAt"])
 
     def test_rule_failures_abort_the_refresh_and_identify_only_the_resource(self):
         for bad in (OSError("https://source.example.invalid/private-credential"), io.BytesIO(b"invalid")):

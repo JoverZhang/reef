@@ -37,7 +37,7 @@ CONFIG = {
         ]},
     },
     "exits": ["Endpoint A", "Endpoint B"],
-    "pools": {1: "pool-a", 7: "pool-b"},
+    "pools": {1: {"name": "pool-a", "relay": True}, 7: {"name": "pool-b", "relay": True}},
 }
 
 
@@ -85,6 +85,43 @@ class WebSnapshotTests(unittest.TestCase):
         self.assertEqual(len(originals), len(set(originals)))
         self.assertFalse(any(name.startswith(("DIRECT |", "RELAY |")) for name in originals))
 
+    def test_exit_only_pool_remains_filterable_without_becoming_a_relay(self):
+        for enabled in (["pool-a"], []):
+            with self.subTest(enabled=enabled):
+                pools = {key: {"name": pool["name"], **({"relay": True} if pool["name"] in enabled else {})}
+                         for key, pool in CONFIG["pools"].items()}
+                snapshot = self.build({**CONFIG, "pools": pools})
+                for profile in ("clash", "clash-geo", "qx"):
+                    query = {"type": profile, "include7": "Gamma"}
+                    preview = self.request(query, snapshot=snapshot)["preview"]
+                    self.assertIn("POOL | pool-b", preview["choices"])
+                    self.assertFalse(preview["pools"][1]["relay"])
+                    self.assertEqual(preview["pools"][1]["selected"], ["source-a | Gamma 03"])
+                    result = self.request(query, download=True, snapshot=snapshot)
+                    self.assertEqual(result["status"], 200)
+                    if profile == "qx":
+                        for relay in preview["relays"]:
+                            self.assertEqual(relay["choices"], [f"POOL | {name}" for name in enabled] + ["direct"])
+                    else:
+                        document = yaml.safe_load(result["body"])
+                        expected = {f"POOL | {name}" for name in enabled}
+                        self.assertEqual({node["dialer-proxy"] for node in document["proxies"]
+                                          if "dialer-proxy" in node}, expected)
+                        self.assertFalse(any(choice.startswith("RELAY |") and choice.endswith("| pool-b")
+                                             for choice in preview["choices"]))
+
+    def test_pool_roles_validate_and_default_to_exit_only(self):
+        for pool in ({"name": "pool-a"}, {"name": "pool-a", "relay": False}):
+            parsed = core.parse_config({**CONFIG, "pools": {1: pool}})
+            self.assertEqual(parsed.pools, {"1": {"name": "pool-a", "relay": False}})
+        for pool in (None, "pool-a", [], {}, {"relay": True}, {"name": []},
+                     {"name": "pool-a", "unknown": True},
+                     *({"name": "pool-a", "relay": value} for value in (None, "true", 1, 0, []))):
+            with self.subTest(pool=pool), self.assertRaises(ValueError):
+                core.parse_config({**CONFIG, "pools": {1: pool}})
+        with self.assertRaises(ValueError):
+            core.parse_config({**CONFIG, "relay-pools": ["pool-a"]})
+
     def test_authentication_precedes_parameter_validation(self):
         for query in ([], {"password": "wrong", "include999": "Alpha"},
                       [("password", PASSWORD), ("password", PASSWORD)]):
@@ -128,7 +165,7 @@ class WebSnapshotTests(unittest.TestCase):
 
     def test_stable_pool_ids_survive_reordering_and_yaml_roundtrip(self):
         config = copy.deepcopy(CONFIG)
-        config["pools"] = {"7": "pool-b", 1: "pool-a"}
+        config["pools"] = {"7": CONFIG["pools"][7], 1: CONFIG["pools"][1]}
         config = core.parse_config_yaml(core.dump_config(config))
         reordered = self.build(config)
         result = self.request({"include1": "Alpha", "include7": "Beta"}, snapshot=reordered)
@@ -355,4 +392,4 @@ class WebSnapshotTests(unittest.TestCase):
     def test_pool_ids_reject_ambiguous_yaml_numbers(self):
         for key in ("01", "0x1", "-1", "0", "1_0"):
             with self.subTest(key=key), self.assertRaises(ValueError):
-                core.parse_config_yaml(core.dump_config(CONFIG).replace("  1: pool-a", f"  {key}: pool-a"))
+                core.parse_config_yaml(core.dump_config(CONFIG).replace("  1:\n", f"  {key}:\n"))
