@@ -32,7 +32,7 @@ CONFIG = {
     "proxies": [LOCAL],
     "proxy-providers": {
         "overseas": {
-            "type": "http", "url": URL, "interval": 3600,
+            "type": "http", "url": URL,
             "filter": "Sample-A|Sample-B|Sample-C", "exclude-filter": "Sample-C",
         },
         "sample-a": {"type": "http", "url": URL, "filter": "Sample-A"},
@@ -215,6 +215,28 @@ class MihomoInputTests(unittest.TestCase):
         self.config["proxy-groups"] = [{"name": "PROXY", "type": "select", "include-all": True}]
         document = yaml.safe_load(self.generate()[0]["body"])
         self.assertEqual(document["proxy-groups"][0]["proxies"], ["own-trojan", "A-own-trojan", "B-own-trojan-backup"])
+
+    def test_unused_configuration_is_rejected_before_fetching(self):
+        cases = []
+        config = self.automatic_relay_config()
+        cases.append(({**config, "proxies": [LOCAL]}, "top-level proxies are unused"))
+        for kind in ("http", "inline"):
+            config = self.automatic_relay_config()
+            config["proxy-providers"]["private-unused"] = (
+                {"type": "http", "url": URL} if kind == "http" else {"type": "inline", "payload": [LOCAL]})
+            cases.append((config, "proxy-provider #5 is unused"))
+        for kind in ("http", "inline"):
+            provider = {"type": kind, "interval": 3600}
+            provider.update({"url": URL} if kind == "http" else {"payload": [LOCAL]})
+            cases.append(({"secret": SECRET, "proxy-providers": {"private-unused": provider}}, "unsupported fields"))
+        for key, value in (("url", URL), ("interval", 300), ("timeout", 5000), ("tolerance", 50), ("lazy", True)):
+            cases.append(({"secret": SECRET, "proxies": [LOCAL], "proxy-groups": [
+                {"name": "PROXY", "type": "select", "include-all": True, key: value}]}, "probe fields"))
+        with patch.object(upstream, "urlopen", side_effect=AssertionError("unexpected fetch")):
+            for config, message in cases:
+                with self.subTest(message=message), self.assertRaisesRegex(ValueError, message) as error:
+                    core.parse_config(config)
+                self.assertNotIn("private-", str(error.exception))
 
     def test_schema_rejects_unsupported_options_and_private_values_without_echoing(self):
         cases = [

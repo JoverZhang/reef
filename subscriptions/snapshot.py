@@ -44,12 +44,7 @@ def compile_snapshot(config, profiles: list[dict], context: dict) -> dict:
     qx_body = documents.get("quantumult-x")
     qx_policy = next((line for line in (qx_body or "").splitlines()
                       if line.startswith(("static=Reef,", "url-latency-benchmark=Reef,"))), "")
-    source_nodes = list(provider_nodes.values()) if config.exit_providers else proxies
-    if config.exit_providers:
-        source_nodes += [node for node in context["upstream_proxies"]
-                         if node["name"] in context["top_proxy_names"] and node["name"] not in provider_nodes]
-    # Non-pool nodes include generated paths and any pre-existing standalone nodes.
-    # Only pool membership is request-filterable in this version.
+    # Automatic paths retain their original provider endpoints for history.
     return {
         "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
         "passwordHash": context.get("password_hash") or hashlib.sha256(config.web_password.encode()).hexdigest(),
@@ -57,7 +52,7 @@ def compile_snapshot(config, profiles: list[dict], context: dict) -> dict:
         "pools": pools,
         "otherNodes": [] if config.exit_providers else [metadata(node) for node in proxies if node["name"] not in pool_nodes],
         "proxies": proxies,
-        "sourceNodes": source_nodes,
+        "sourceNodes": list(provider_nodes.values()) if config.exit_providers else proxies,
         "groups": groups,
         "templates": {"clash": global_profile, "clash-geo": client},
         "qx": {

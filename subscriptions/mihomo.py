@@ -59,7 +59,7 @@ def validate_input(values: dict[str, Any]) -> None:
         label = f"proxy-provider #{index}"
         _name(name, label)
         _mapping(spec, {
-            "type", "url", "upstreams", "interval", "payload", "filter", "exclude-filter",
+            "type", "url", "upstreams", "payload", "filter", "exclude-filter",
             "exclude-type", "override",
         }, label)
         if spec.get("type") not in ("http", "inline"):
@@ -83,8 +83,6 @@ def validate_input(values: dict[str, Any]) -> None:
             raise ValueError(f"{label} inline type requires payload and no upstream URLs")
         else:
             validate_nodes(spec["payload"], label, set(), allow_dialer=True)
-        if "interval" in spec and (type(spec["interval"]) is not int or spec["interval"] < 0):
-            raise ValueError(f"{label} interval must be a nonnegative integer")
         for key in ("filter", "exclude-filter"):
             _patterns(spec.get(key, ""), f"{label} {key}")
         if not isinstance(spec.get("exclude-type", ""), str):
@@ -113,6 +111,8 @@ def validate_input(values: dict[str, Any]) -> None:
         names.add(name)
         if group.get("type") not in ("select", "url-test"):
             raise ValueError(f"{label} type must be select or url-test")
+        if group["type"] == "select" and {"url", "interval", "timeout", "tolerance", "lazy"}.intersection(group):
+            raise ValueError(f"{label} probe fields require type url-test")
         for key in ("proxies", "use"):
             members = group.get(key, [])
             if not isinstance(members, list):
@@ -139,6 +139,8 @@ def validate_input(values: dict[str, Any]) -> None:
             raise ValueError("pools must be a nonempty mapping of stable numeric IDs to pool objects")
         if groups:
             raise ValueError("exits/pools cannot be combined with explicit proxy-groups")
+        if proxies:
+            raise ValueError("top-level proxies are unused with exits/pools; use an inline exit provider")
         for index, name in enumerate(exits, start=1):
             label = f"relay exit #{index}"
             _name(name, label)
@@ -165,6 +167,10 @@ def validate_input(values: dict[str, Any]) -> None:
                 raise ValueError("pool must reference an existing non-exit provider")
         if len({pool["name"] for pool in pools.values()}) != len(pools):
             raise ValueError("pools contains duplicate provider names")
+        used = set(exits) | {pool["name"] for pool in pools.values()}
+        for index, name in enumerate(providers, start=1):
+            if name not in used:
+                raise ValueError(f"proxy-provider #{index} is unused; reference it in exits or pools, or remove it")
 
 
 def provider_upstreams(spec: dict) -> list[dict]:

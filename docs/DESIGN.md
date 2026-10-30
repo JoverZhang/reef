@@ -447,11 +447,13 @@ This first version accepts:
   names using regular expressions; `exclude-type` lists protocol types separated
   by `|`. `override.additional-prefix` and `override.additional-suffix` can
   disambiguate node names. `override.dialer-proxy` applies the same intermediate
-  proxy or group to every selected node. HTTP `interval` is accepted, but Reef fetches on each
-  generation rather than running a background refresh timer.
+  proxy or group to every selected node. Provider `interval` is rejected because
+  Reef refreshes shared snapshots on demand and does not use provider timers.
 - `proxy-groups`: `select` and `url-test` groups, with `proxies` for node/group
   names and `use` for provider names. The native `include-all`,
   `include-all-proxies`, and `include-all-providers` selectors are also accepted.
+  Probe fields (`url`, `interval`, `timeout`, `tolerance`, `lazy`) require a
+  `url-test` group; they are rejected on manual `select` groups.
   Custom groups must contain `PROXY`, which is the existing templates' target.
   With no custom groups or automatic exit/pool configuration, the existing `PROXY` and `AUTO`
   defaults remain.
@@ -463,6 +465,10 @@ This first version accepts:
   cannot have leading zeros or be reused. Provider names cannot repeat. Reordering
   this mapping does not change which collection an `includeN` parameter filters.
   Explicit `proxy-groups` cannot be combined with automatic exits/pools.
+  Nonempty top-level `proxies` are rejected in this mode: define endpoints in
+  inline providers referenced by `exits` instead. Every provider must be referenced
+  by `exits` or `pools`; unused providers fail before any network requests.
+  Snapshot history includes only these declared provider endpoints.
   Only pools with `relay: true` may act as intermediates. Relay choices follow
   pool order. All pools remain
   selectable as final exits and retain their stable `includeN` filters. This

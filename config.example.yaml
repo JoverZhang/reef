@@ -46,7 +46,6 @@ proxy-providers: {}
 #  pool-a:
 #    type: http
 #    url: "https://subscription.example.com/private-clash-url"
-#    interval: 3600
 #    filter: "Sample-A|Sample-B"
 #    exclude-filter: "Sample-Excluded"
 #    override:

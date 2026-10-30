@@ -112,8 +112,8 @@ class WebSnapshotTests(unittest.TestCase):
 
     def test_pool_roles_validate_and_default_to_exit_only(self):
         for pool in ({"name": "pool-a"}, {"name": "pool-a", "relay": False}):
-            parsed = core.parse_config({**CONFIG, "pools": {1: pool}})
-            self.assertEqual(parsed.pools, {"1": {"name": "pool-a", "relay": False}})
+            parsed = core.parse_config({**CONFIG, "pools": {**CONFIG["pools"], 1: pool}})
+            self.assertEqual(parsed.pools["1"], {"name": "pool-a", "relay": False})
         for pool in (None, "pool-a", [], {}, {"relay": True}, {"name": []},
                      {"name": "pool-a", "unknown": True},
                      *({"name": "pool-a", "relay": value} for value in (None, "true", 1, 0, []))):
