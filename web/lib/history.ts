@@ -4,7 +4,7 @@ import { selectionModel, type Snapshot } from "./subscription.ts";
 
 export type HistorySummary = { id: string; at: string; trigger: string; added: number; removed: number };
 export type HistoryEntry = HistorySummary & { lines: string[] };
-export type HistoryOverview = { count: number; latest: HistorySummary | null };
+export type HistoryOverview = { count: number; latest: HistorySummary | null; unavailable?: boolean };
 export type HistoryPage = { entries: HistorySummary[]; page: number; pages: number; total: number }
   | { entry: HistorySummary; lines: string[]; page: number; pages: number; total: number };
 type Field = { hash: string; value?: string };

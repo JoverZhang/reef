@@ -38,6 +38,7 @@ class RuntimeRefreshTests(unittest.TestCase):
                 patch.object(rules, "urlopen", side_effect=AssertionError("Build fetched rules")):
             payload = self.prepare(config)
         serialized = json.dumps(payload)
+        self.assertEqual(payload["config"]["rule_update_interval"], 3600)
         for value in (PASSWORD, config["secret"], "ssh_private_key", "stats_secret"):
             self.assertNotIn(value, serialized)
         self.assertIn(URL, serialized)
@@ -57,7 +58,8 @@ class RuntimeRefreshTests(unittest.TestCase):
         return io.BytesIO(b"payload:\n  - DOMAIN-SUFFIX,service.example.invalid\n")
 
     def test_runtime_compiles_nodes_and_all_hosted_rules_together(self):
-        payload = self.prepare({**CONFIG, "pools": {**CONFIG["pools"], 7: {"name": "pool-b"}}})
+        payload = self.prepare({**CONFIG, "pools": {**CONFIG["pools"], 7: {"name": "pool-b"}},
+                                "web": {**CONFIG["web"], "rule_update_interval": 21600}})
         self.assertEqual(payload["config"]["pools"]["7"], {"name": "pool-b", "relay": False})
         with patch.object(upstream, "urlopen", return_value=io.BytesIO(yaml.safe_dump({"proxies": NODES}).encode())) as nodes, \
                 patch.object(rules, "urlopen", side_effect=self.rule_response) as resources:
@@ -69,7 +71,9 @@ class RuntimeRefreshTests(unittest.TestCase):
         for policy in snapshot["qx"]["relay"]["policies"]:
             if policy["name"].startswith("RELAY |"):
                 self.assertEqual(policy["members"], ["POOL | pool-a", "direct"])
-        self.assertEqual(len(snapshot["qx"]["relay"]["sections"]["filter_remote"]), 5)
+        remote_rules = snapshot["qx"]["relay"]["sections"]["filter_remote"]
+        self.assertEqual(len(remote_rules), 5)
+        self.assertTrue(all(line.endswith(", update-interval=21600") for line in remote_rules))
         for resource in snapshot["resources"]:
             self.assertNotIn("url", resource)
             if resource["profile"] == "qx":
@@ -79,7 +83,7 @@ class RuntimeRefreshTests(unittest.TestCase):
                 self.assertIn(resource["policy"], resource["lines"][0])
         for provider in snapshot["templates"]["clash-geo"]["rule-providers"].values():
             self.assertTrue(provider["url"].startswith("reef-resource:"))
-            self.assertEqual(provider["interval"], 3600)
+            self.assertEqual(provider["interval"], 21600)
         self.assertNotIn(URL, json.dumps(snapshot))
 
     def test_runtime_uses_tunnel_for_shared_sources_without_direct_subscription_fetch(self):

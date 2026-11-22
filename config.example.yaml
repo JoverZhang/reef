@@ -8,6 +8,8 @@ secret: "replace_with_64_lowercase_hex_chars"
 web:
   # Optional existing cluster node for opaque HTTPS subscription downloads.
   # fetch_tunnel: entry-a
+  # Optional hosted rule download interval in seconds (default: 3600).
+  # rule_update_interval: 21600
   password: "replace-with-an-independent-random-access-key"
 
 # Optional for deployment: `just set-ssh-key ~/.ssh/id_ed25519` writes the key

@@ -18,7 +18,7 @@ def refresh(payload: dict) -> dict:
     profiles, context = compile_profiles(config, payload["context"], hosted_rules=True,
                                          tunnel=payload.get("fetch_tunnel"))
     snapshot = compile_snapshot(config, profiles, context)
-    compile_resources(snapshot)
+    compile_resources(snapshot, config.rule_update_interval)
     snapshot["updatedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
     return snapshot
 

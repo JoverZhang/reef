@@ -14,7 +14,7 @@ function updateURL() {
 }
 function updateStatus() {
   $("snapshot-status").innerHTML = statusHtml(data.model?.updatedAt ?? "", data.cache, data.history);
-  $("history-count").textContent = data.history.count;
+  $("history-count").textContent = data.history.unavailable ? "" : data.history.count;
 }
 function render(inventory = false) {
   updateStatus();
@@ -128,7 +128,7 @@ $("force-update").addEventListener("click", async () => {
     historyEpoch++; historyPage = 0; historyLoading = false; $("history-list").replaceChildren();
     if ($("history-dialog").open) loadHistory();
     if (!response.ok) throw new Error(result.error || "Update failed. Retry shortly.");
-    $("refresh-status").textContent = result.history.latest?.at === result.updatedAt ? "Updated. View the diff in History." : "Checked successfully. No changes.";
+    $("refresh-status").textContent = result.history.latest?.at === result.updatedAt ? "Updated. View the diff in History." : "Checked successfully.";
   } catch (error) {
     if (data.model && Date.now() - Date.parse(data.model.updatedAt) >= 3_600_000) { data.cache.fresh = false; render(); }
     $("refresh-status").textContent = error.message || "Update failed. Retry shortly.";

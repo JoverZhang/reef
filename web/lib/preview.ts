@@ -20,7 +20,7 @@ export function previewHtml(preview: Preview, params: URLSearchParams, data: Pre
   <section class="intro"><p class="eyebrow">YOUR CONNECTIONS</p><h1>Choose your route.</h1>
     <p>Filter your relay pools, then use this selection in your client.</p>
     <div class="refresh-bar"><div id="snapshot-status">${statusHtml(preview.updatedAt, data.cache, data.history)}</div>
-      <div class="buttons"><button type="button" id="force-update">Force update</button><button type="button" id="open-history" class="secondary">History <span id="history-count">${data.history.count}</span></button></div></div>
+      <div class="buttons"><button type="button" id="force-update">Force update</button><button type="button" id="open-history" class="secondary">History <span id="history-count">${data.history.unavailable ? "" : data.history.count}</span></button></div></div>
     <p id="refresh-status" role="status" aria-live="polite">${escape(data.cache.error ?? "")}</p></section>
   <form method="get" action="/" id="filters"><input type="hidden" name="password" value="${escape(params.get("password")!)}">
     <div id="inventory">${inventoryHtml(preview)}</div>

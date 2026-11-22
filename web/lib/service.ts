@@ -1,5 +1,5 @@
 import { stringify } from "yaml";
-import { RefreshError, type CacheState } from "./cache.ts";
+import { RefreshError, type CacheState, type CachedRule } from "./cache.ts";
 import { authenticate, validateQuery, select, dump, RequestError, selectionModel, type Preview } from "./subscription.ts";
 import type { HistoryPage } from "./history.ts";
 import { previewHtml } from "./preview.ts";
@@ -29,8 +29,9 @@ function requestOrigin(request: Request): string {
 
 export function subscriptionService(
   bootstrap: { passwordHash: string; poolIds: string[] },
-  load: (force?: boolean) => Promise<CacheState>,
+  load: (force?: boolean, includeHistory?: boolean) => Promise<CacheState>,
   readHistory?: (page: number, id?: string) => Promise<HistoryPage>,
+  readRule?: (id: string) => Promise<CachedRule>,
 ) {
   const auth = (params: URLSearchParams) => authenticate(bootstrap.passwordHash, params);
   const data = (state: CacheState) => ({
@@ -45,7 +46,7 @@ export function subscriptionService(
         auth(params);
         const type = validateQuery(params, bootstrap.poolIds);
         let state: CacheState;
-        try { state = await load(); }
+        try { state = await load(false, !download); }
         catch (error) {
           if (!(error instanceof RefreshError)) throw error;
           state = { snapshot: null, fresh: false, error: error.message };
@@ -118,16 +119,15 @@ export function subscriptionService(
         }
         const pageText = params.get("page") ?? "1";
         if (!/^[1-9][0-9]{0,6}$/.test(pageText)) throw new RequestError(400, "Invalid rule page.");
-        const state = await load();
-        if (!state.fresh || !state.snapshot) throw new RequestError(502, state.error ?? "A current snapshot is unavailable.");
-        const resource = state.snapshot.resources?.find(resource => resource.id === id);
+        if (!readRule) throw new RefreshError("Rule resources are unavailable.");
+        const { resource, updatedAt } = await readRule(id);
         if (!resource) throw new RequestError(404, "Not found");
         if (preview) {
           const query = (params.get("q") ?? "").toLowerCase();
           const lines = query ? resource.lines.filter(line => line.toLowerCase().includes(query)) : resource.lines;
           const page = Number(pageText);
           return response(JSON.stringify({ lines: lines.slice((page - 1) * 100, page * 100), page,
-            total: lines.length, pages: Math.max(1, Math.ceil(lines.length / 100)), updatedAt: state.snapshot.updatedAt }),
+            total: lines.length, pages: Math.max(1, Math.ceil(lines.length / 100)), updatedAt }),
           200, "application/json");
         }
         return resource.profile === "qx"

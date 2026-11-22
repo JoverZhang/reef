@@ -71,8 +71,12 @@ export function rulesHtml(preview, password) {
 }
 
 export function statusHtml(updatedAt, cache, history) {
+  const lastChanged = history.unavailable ? "History unavailable" :
+    history.latest ? escape(timestamp(history.latest.at)) : "No changes recorded";
+  const checkStatus = !cache.fresh ? "No current snapshot. Export is unavailable." :
+    history.latest?.at === updatedAt ? "Content changed." : "Checked successfully.";
   return `<div><p class="hint">Last checked</p><strong>${escape(timestamp(updatedAt))}</strong>
-      <p class="hint">${!cache.fresh ? "No current snapshot. Export is unavailable." : !history.latest ? "Baseline initialized. No changes recorded." : history.latest.at === updatedAt ? "Content changed." : "No changes."}</p></div>
-    <div><p class="hint">Last changed</p><strong>${history.latest ? escape(timestamp(history.latest.at)) : "No changes recorded"}</strong>
+      <p class="hint">${checkStatus}</p></div>
+    <div><p class="hint">Last changed</p><strong>${lastChanged}</strong>
       <p class="hint">${history.latest ? `+${history.latest.added} -${history.latest.removed} lines` : "Only updates with differences enter history."}</p></div>`;
 }

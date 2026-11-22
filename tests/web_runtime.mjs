@@ -33,6 +33,9 @@ const request = (path, key = password) => new Request(`https://reef.example.inva
 const post = key => new Request("https://reef.example.invalid/refresh", {
   method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: key }),
 });
+const ruleReader = data => async id => ({
+  resource: data.resources.find(resource => resource.id === id) ?? null, updatedAt: data.updatedAt,
+});
 
 test("authentication and query validation run before any cache or upstream operation", async () => {
   const service = subscriptionService(bootstrap, () => { throw new Error("Loader must not run"); });
@@ -49,7 +52,8 @@ test("authentication and query validation run before any cache or upstream opera
 
 test("preview, export, hosted rules, search, and pagination share one complete snapshot", async () => {
   const data = snapshot(), original = JSON.stringify(data);
-  const service = subscriptionService(bootstrap, async () => ({ snapshot: data, fresh: true, error: null }));
+  const service = subscriptionService(bootstrap, async () => ({ snapshot: data, fresh: true, error: null }),
+    undefined, ruleReader(data));
   const page = await service.serve(request("/"), false);
   assert.equal(page.status, 200);
   const html = await page.text();
@@ -73,7 +77,9 @@ test("preview, export, hosted rules, search, and pagination share one complete s
 
 test("failed refresh retains preview but expired data cannot be exported as success", async () => {
   for (const fresh of [false, true]) {
-    const service = subscriptionService(bootstrap, async () => ({ snapshot: snapshot(), fresh, error: "upstream URL #2 fetch failed" }));
+    const data = snapshot();
+    const service = subscriptionService(bootstrap, async () => ({ snapshot: data, fresh, error: "upstream URL #2 fetch failed" }),
+      undefined, fresh ? ruleReader(data) : async () => { throw new RefreshError("upstream URL #2 fetch failed"); });
     const page = await service.serve(request("/"), false);
     assert.equal(page.status, 200);
     assert.match(await page.text(), /upstream URL #2 fetch failed/);
@@ -129,6 +135,66 @@ const command = async (...args) => {
   if (result && result.error) throw new Error(result.error);
   return result;
 };
+
+test("fresh rule requests read one rule field and removed rules disappear with the old snapshot", cacheOptions, async () => {
+  const namespace = randomUUID(), calls = [];
+  let remove = false;
+  const load = snapshotLoader({ namespace, command: async (...args) => { calls.push(args); return command(...args); },
+    compile: async () => {
+      const data = snapshot();
+      if (remove) data.resources.shift();
+      return data;
+    },
+  });
+  const service = subscriptionService(bootstrap, load, load.history, load.rule);
+  const req = request("/rules/clash-geo/sample?format=json&page=3");
+  const cold = await service.rules(req, "clash-geo/sample");
+  assert.equal(cold.status, 200);
+  assert.equal((await cold.json()).total, 205);
+  assert.equal((await load()).snapshot.resources[0].count, 205);
+  assert.equal((await load()).snapshot.resources[0].lines, undefined);
+  calls.length = 0;
+  const warm = await service.rules(req, "clash-geo/sample");
+  assert.equal(warm.status, 200);
+  assert.deepEqual((await warm.json()).lines, snapshot().resources[0].lines.slice(200));
+  assert.deepEqual(calls, [["HMGET", `reef:${namespace}:snapshot`, "updatedAt", "rule:clash-geo/sample"]]);
+  remove = true;
+  await load(true);
+  assert.equal((await service.rules(req, "clash-geo/sample")).status, 404);
+});
+
+test("history read and write failures leave freshly published subscriptions usable", cacheOptions, async () => {
+  const namespace = randomUUID();
+  let unavailable = true, port = 443;
+  const load = snapshotLoader({ namespace, command: async (...args) => {
+    if (unavailable && args[0] === "EVAL" && (args[1].includes("LPUSH") || args[1].includes("LINDEX"))) {
+      throw new RefreshError("History timed out.");
+    }
+    return command(...args);
+  }, compile: async () => {
+    const data = withNodes();
+    data.sourceNodes[0].port = data.proxies[0].port = port;
+    return data;
+  } });
+  const service = subscriptionService({ ...bootstrap, poolIds: ["1"] }, load, load.history, load.rule);
+  unavailable = false;
+  await load();
+  unavailable = true;
+  port = 8443;
+  const refresh = await service.refresh(post(password));
+  assert.equal(refresh.status, 200);
+  assert.equal((await refresh.json()).history.unavailable, true);
+  const output = await service.serve(request("/dump"), true);
+  assert.equal(output.status, 200);
+  assert.match(await output.text(), /port: 8443/);
+  assert.equal((await service.rules(request("/rules/qx/sample"), "qx/sample")).status, 200);
+  unavailable = false;
+  assert.equal((await load.history()).total, 0);
+  await load(true);
+  const history = await load.history();
+  assert.equal(history.total, 1);
+  assert.ok((await load.history(1, history.entries[0].id)).lines.includes("+ port: 8443"));
+});
 
 test("Redis coalesces independent workers and namespaces deployments", cacheOptions, async () => {
   const namespace = randomUUID();

@@ -322,6 +322,9 @@ snapshot and its original timestamp, and return an error for the refresh. Fresh
 older data remains usable. Expired older data may be displayed with a clear
 error but never exported as a successful subscription or rule response.
 Snapshots are retained for up to one day for this stale preview behavior.
+The snapshot and rule resources become available together. Serving a fresh rule
+reads only the requested rule and its timestamp. Preview and export do not
+read rule bodies.
 Refresh workers have a three-minute compiler timeout and a four-minute lock.
 Other requests wait up to one minute for an active refresh, then return a retry
 error. A failed or expired worker cannot overwrite a newer snapshot.
@@ -351,9 +354,11 @@ using the authenticated resource route with `format=json`, `q`, and `page`.
 Generated endpoint rules are described without revealing node addresses in HTML.
 Mihomo rule-providers and QX filter_remote reference Reef's authenticated rule
 resources. QX proxy resources contain their required TUN reinjection flags;
-direct resources do not. Client resource intervals are one hour. Refreshing Reef
-does not push updates to clients; clients fetch configurations and resources on
-their own schedules. Include filters affect nodes only.
+direct resources do not. Optional `web.rule_update_interval` sets the client
+rule download interval in seconds for both profiles. It must be a positive
+integer and defaults to 3600. It does not change the server snapshot freshness
+window. Clients must fetch the configuration again to receive a new interval.
+Include filters affect nodes only.
 
 ### Update History
 
@@ -364,8 +369,11 @@ survive. Project/environment scopes isolate production, local development and
 preview deployments. The initial refresh establishes a baseline without adding a
 change record. An unchanged refresh updates the check time and one-hour freshness
 only: it neither consumes a history slot nor evicts the last real change. A failed
-refresh preserves the baseline and history. Refresh locks protect publication of
-the snapshot, baseline and any history entry in one Redis operation.
+refresh preserves the baseline and history. The refresh lock protects the
+snapshot and the subsequent history update. History reads and writes are optional
+for subscription requests. If saving history fails, the fresh snapshot still
+serves and the next successful history update compares against the last saved
+baseline.
 
 Compare original protocol endpoints once, before generated DIRECT/RELAY copies.
 Compare normalized fields, collection memberships, rule resource contents and

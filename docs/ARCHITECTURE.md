@@ -107,13 +107,16 @@ for the Node function. The input excludes the root seed, SSH key, and plaintext
 web password. It retains source URLs and credentials needed by the compiler.
 
 `web/lib/cache.ts` coordinates a compressed snapshot and owner-token refresh lock
-in Upstash Redis. A deployment-specific namespace makes each deployment start
+in Upstash Redis. The cache publishes one hash with a snapshot summary and one
+field per rule resource so each request reads only the data it needs.
+A deployment-specific namespace makes each deployment start
 empty. A separate project/environment namespace retains a normalized baseline and
 50 nonempty diffs across deployments. `web/lib/history.ts` compares original
 endpoints, memberships and rules; ordinary connection fields retain readable
 values while credentials become server-only fingerprints and display as `***`.
-Snapshot, baseline and any history entry are published atomically under the same
-refresh lock. Unchanged updates never append or trim history.
+The snapshot and its rules are published atomically. The same refresh lock
+guards the subsequent history write, which may fail without invalidating the
+snapshot. Unchanged updates never append or trim history.
 `web/lib/runtime.ts` invokes the bundled compiler with private stdin and
 suppressed stderr. Only a complete successful refresh replaces shared data.
 `subscriptions/tunnel.py` uses HTTPS CONNECT with independent proxy and target

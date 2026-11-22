@@ -22,6 +22,7 @@ export type RuleResource = {
   id: string; name: string; profile: "clash-geo" | "qx";
   policy: string; reinject: boolean; lines: string[];
 };
+type RuleSummary = Omit<RuleResource, "lines"> & { count: number };
 
 export type Snapshot = {
   updatedAt: string;
@@ -36,6 +37,12 @@ export type Snapshot = {
   qx: { body: string | null; error: string | null; choices: string[]; relay: QxRelay | null };
   resources?: RuleResource[];
 };
+export type CachedSnapshot = Omit<Snapshot, "resources"> & { resources?: RuleSummary[] };
+
+export function ruleSummary(resource: RuleResource | RuleSummary): RuleSummary {
+  const { id, name, profile, policy, reinject } = resource;
+  return { id, name, profile, policy, reinject, count: "lines" in resource ? resource.lines.length : resource.count };
+}
 
 export type Preview = {
   type: ProfileType;
@@ -46,7 +53,7 @@ export type Preview = {
   choices: string[];
   relays: { name: string; choices: string[] }[];
   errors: string[];
-  resources?: (Omit<RuleResource, "lines"> & { count: number })[];
+  resources?: RuleSummary[];
   ruleOrder?: string[];
   cache?: { fresh: boolean; error: string | null };
 };
@@ -73,7 +80,7 @@ export type SelectionModel = Pick<Snapshot, "updatedAt" | "exits" | "pools" | "o
   profiles: Record<ProfileType, Pick<Preview, "resources" | "ruleOrder">>;
 };
 
-export function selectionModel(snapshot: Snapshot): SelectionModel {
+export function selectionModel(snapshot: Snapshot | CachedSnapshot): SelectionModel {
   const node = ({ name, originalName, protocol, qxSupported }: NodeInfo): NodeInfo =>
     ({ name, originalName, protocol, qxSupported });
   return {
@@ -90,13 +97,13 @@ export function selectionModel(snapshot: Snapshot): SelectionModel {
     } : null },
     profiles: Object.fromEntries((Object.keys(profileLabels) as ProfileType[]).map(type => [type, {
       resources: (snapshot.resources ?? []).filter(resource => resource.profile === type)
-        .map(({ id, name, profile, policy, reinject, lines }) => ({ id, name, profile, policy, reinject, count: lines.length })),
+        .map(ruleSummary),
       ruleOrder: previewRules(snapshot, type),
     }])) as SelectionModel["profiles"],
   };
 }
 
-export function select(snapshot: Snapshot, params: URLSearchParams): Selection {
+export function select(snapshot: CachedSnapshot | Snapshot, params: URLSearchParams): Selection {
   authenticate(snapshot.passwordHash, params);
   const selected = selectModel(selectionModel(snapshot), params);
   const names = new Set(selected.proxies.map(node => node.name));
@@ -119,7 +126,7 @@ export function resourceUrl(origin: string, password: string, id: string): strin
   return url.href;
 }
 
-function previewRules(snapshot: Snapshot, type: ProfileType): string[] {
+function previewRules(snapshot: CachedSnapshot | Snapshot, type: ProfileType): string[] {
   const addresses = new Set(snapshot.proxies.map(proxy => proxy.server));
   if (type === "qx") {
     return [
@@ -136,7 +143,7 @@ function previewRules(snapshot: Snapshot, type: ProfileType): string[] {
   });
 }
 
-export function dump(snapshot: Snapshot, selection: Selection, location?: { origin: string; password: string }): string {
+export function dump(snapshot: CachedSnapshot | Snapshot, selection: Selection, location?: { origin: string; password: string }): string {
   if (selection.preview.errors.length) {
     throw new RequestError(422, selection.preview.errors.join("\n"));
   }

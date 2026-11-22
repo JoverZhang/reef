@@ -29,7 +29,7 @@ def qx_rules(body: bytes, policy: str, reinject: bool, label: str) -> list[str]:
     return list(dict.fromkeys(rules))
 
 
-def compile_resources(snapshot: dict) -> None:
+def compile_resources(snapshot: dict, update_interval: int) -> None:
     from subscriptions.quantumult_x import _sections
 
     pending = []
@@ -40,7 +40,7 @@ def compile_resources(snapshot: dict) -> None:
         resource_id = f"clash-geo/{name}"
         pending.append({"id": resource_id, "name": name, "profile": "clash-geo",
                         "policy": policies[name], "url": provider["url"], "reinject": False})
-        provider.update(url=f"reef-resource:{resource_id}", interval=3600)
+        provider.update(url=f"reef-resource:{resource_id}", interval=update_interval)
 
     qx = snapshot["qx"]
     sections = qx["relay"]["sections"] if qx["relay"] else _sections(qx["body"] or "")
@@ -53,7 +53,7 @@ def compile_resources(snapshot: dict) -> None:
         pending.append({"id": resource_id, "name": name, "profile": "qx", "policy": policy,
                         "url": url, "reinject": bool(qx["relay"]) and policy != "direct"})
         options = [option for option in options if not option.startswith("update-interval=")]
-        remote.append(", ".join([f"reef-resource:{resource_id}", *options, "update-interval=3600"]))
+        remote.append(", ".join([f"reef-resource:{resource_id}", *options, f"update-interval={update_interval}"]))
     if sections:
         sections["filter_remote"] = remote
         if not qx["relay"]:
