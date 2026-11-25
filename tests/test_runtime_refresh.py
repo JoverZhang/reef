@@ -46,10 +46,18 @@ class RuntimeRefreshTests(unittest.TestCase):
         self.assertNotIn(URL, bootstrap)
         self.assertNotIn(PASSWORD, bootstrap)
         self.assertIn('"poolIds": ["1", "7"]', bootstrap)
+        self.assertIn('"redisEnabled": true', bootstrap)
         for path in (self.root / "web/generated").iterdir():
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.prepare(config)
         self.assertNotEqual(bootstrap, (self.root / "web/generated/bootstrap.ts").read_text())
+
+    def test_redis_flag_is_a_boolean_in_the_server_bootstrap(self):
+        self.prepare({**CONFIG, "web": {**CONFIG["web"], "redis_enabled": False}})
+        bootstrap = (self.root / "web/generated/bootstrap.ts").read_text()
+        self.assertIn('"redisEnabled": false', bootstrap)
+        with self.assertRaisesRegex(ValueError, "web.redis_enabled must be a boolean"):
+            self.prepare({**CONFIG, "web": {**CONFIG["web"], "redis_enabled": "false"}})
 
     @staticmethod
     def rule_response(url, **kwargs):

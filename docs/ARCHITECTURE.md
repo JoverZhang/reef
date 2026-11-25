@@ -117,6 +117,8 @@ values while credentials become server-only fingerprints and display as `***`.
 The snapshot and its rules are published atomically. The same refresh lock
 guards the subsequent history write, which may fail without invalidating the
 snapshot. Unchanged updates never append or trim history.
+When `web.redis_enabled` is false, the cache coalesces refreshes in process and
+keeps one complete snapshot per warm function instance without Redis history.
 `web/lib/runtime.ts` invokes the bundled compiler with private stdin and
 suppressed stderr. Only a complete successful refresh replaces shared data.
 `subscriptions/tunnel.py` uses HTTPS CONNECT with independent proxy and target

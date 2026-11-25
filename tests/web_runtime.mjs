@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
 import { subscriptionService } from "../web/lib/service.ts";
-import { snapshotLoader, redisCommand, RefreshError, FRESH_MS } from "../web/lib/cache.ts";
+import { memorySnapshotLoader, snapshotLoader, redisCommand, RefreshError, FRESH_MS } from "../web/lib/cache.ts";
 import { comparisonBaseline, compare } from "../web/lib/history.ts";
 import { selectionModel, select } from "../web/lib/subscription.ts";
 import { selectModel } from "../web/public/selection.js";
@@ -122,6 +122,43 @@ test("Redis credentials are required and never included in errors", async () => 
   await assert.rejects(redisCommand({})("GET", "sample"), /Connect Upstash Redis/);
   await assert.rejects(redisCommand({ KV_REST_API_URL: "invalid-private-url", KV_REST_API_TOKEN: "private-token" })("GET", "sample"),
     error => error.message === "Shared cache is unavailable. Check the Redis integration.");
+});
+
+test("Redis-free mode serves authenticated exports and rules with one compile per refresh", async () => {
+  let now = Date.now(), calls = 0, fail = false;
+  const load = memorySnapshotLoader(async () => {
+    calls++;
+    if (fail) throw new RefreshError("Rule resource clash-geo/sample fetch failed");
+    return snapshot();
+  }, () => now);
+  const service = subscriptionService(bootstrap, load, load.history, load.rule);
+  const rule = request("/rules/qx/sample"), download = request("/dump");
+  assert.equal((await service.serve(request("/dump", "wrong"), true)).status, 404);
+  assert.equal((await service.history(request("/history"))).status, 503);
+  assert.equal(calls, 0);
+
+  const [preview, output, resource] = await Promise.all([
+    service.serve(request("/"), false), service.serve(download, true), service.rules(rule, "qx/sample"),
+  ]);
+  assert.equal(calls, 1);
+  assert.equal(preview.status, 200);
+  assert.match(await preview.text(), /History unavailable/);
+  assert.equal(output.status, 200);
+  assert.equal(await resource.text(), "host, service.example.invalid, Reef, via-interface=%TUN%\n");
+
+  fail = true;
+  const update = await service.refresh(post(password));
+  assert.equal(update.status, 502);
+  assert.equal((await update.json()).error, "Rule resource clash-geo/sample fetch failed");
+  assert.equal((await service.serve(download, true)).status, 200);
+  now += FRESH_MS;
+  assert.equal((await service.serve(download, true)).status, 502);
+  assert.equal((await service.rules(rule, "qx/sample")).status, 502);
+  fail = false;
+  const refreshed = await service.refresh(post(password));
+  assert.equal(refreshed.status, 200);
+  assert.equal((await refreshed.json()).updatedAt, new Date(now).toISOString());
+  assert.equal((await service.rules(rule, "qx/sample")).status, 200);
 });
 
 // Run the distributed-cache tests against a disposable Redis container, not a

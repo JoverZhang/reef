@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { bootstrap } from "../generated/bootstrap";
-import { RefreshError, redisCommand, snapshotLoader } from "./cache";
+import { RefreshError, memorySnapshotLoader, redisCommand, snapshotLoader } from "./cache";
 import type { Snapshot } from "./subscription";
 
 async function compile(): Promise<Snapshot> {
@@ -44,9 +44,9 @@ async function compile(): Promise<Snapshot> {
   });
 }
 
-export const loadSnapshot = snapshotLoader({
+export const loadSnapshot = bootstrap.redisEnabled ? snapshotLoader({
   command: redisCommand(), compile,
   namespace: `${process.env.VERCEL_DEPLOYMENT_ID ?? "local"}:${bootstrap.buildId}`,
   historyNamespace: `${process.env.VERCEL_PROJECT_ID ?? "reef"}:${process.env.VERCEL_ENV ?? "local"}` +
     (process.env.VERCEL_ENV === "preview" ? `:${process.env.VERCEL_DEPLOYMENT_ID ?? bootstrap.buildId}` : ""),
-});
+}) : memorySnapshotLoader(compile);

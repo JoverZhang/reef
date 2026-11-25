@@ -9,10 +9,49 @@ const LOCK_MS = 240_000;
 type Command = (...args: (string | number)[]) => Promise<unknown>;
 type Entry = { id: string; snapshot: CachedSnapshot };
 type Failure = { id: string; message: string };
-export type CacheState = { snapshot: CachedSnapshot | null; error: string | null; fresh: boolean; history?: HistoryOverview };
+export type CacheState = { snapshot: CachedSnapshot | Snapshot | null; error: string | null; fresh: boolean; history?: HistoryOverview };
 export type CachedRule = { resource: RuleResource | null; updatedAt: string };
 
 export class RefreshError extends Error {}
+
+function snapshotIsFresh(updatedAt: string | null | undefined, now: number): updatedAt is string {
+  return !!updatedAt && now - Date.parse(updatedAt) < FRESH_MS;
+}
+
+export function memorySnapshotLoader(compile: () => Promise<Snapshot>, now = Date.now) {
+  let snapshot: Snapshot | null = null;
+  let error: string | null = null;
+  let pending: Promise<void> | undefined;
+
+  async function refresh() {
+    try {
+      const compiled = await compile();
+      snapshot = { ...compiled, updatedAt: new Date(now()).toISOString() };
+      error = null;
+    } catch (failure) {
+      error = failure instanceof RefreshError ? failure.message : "Subscription refresh failed.";
+    }
+  }
+
+  async function load(force = false, includeHistory = true) {
+    if (force || !snapshotIsFresh(snapshot?.updatedAt, now())) {
+      pending ??= refresh().finally(() => { pending = undefined; });
+      await pending;
+    }
+    if (snapshot && now() - Date.parse(snapshot.updatedAt) >= RETAIN_SECONDS * 1000) snapshot = null;
+    return { snapshot, error, fresh: snapshotIsFresh(snapshot?.updatedAt, now()),
+      history: includeHistory ? { count: 0, latest: null, unavailable: true } : undefined };
+  }
+
+  return Object.assign(load, {
+    history: undefined,
+    async rule(id: string): Promise<CachedRule> {
+      const { snapshot, fresh, error } = await load(false, false);
+      if (!fresh || !snapshot) throw new RefreshError(error ?? "A current snapshot is unavailable.");
+      return { resource: snapshot.resources?.find(rule => rule.id === id) ?? null, updatedAt: snapshot.updatedAt };
+    },
+  });
+}
 
 export function redisCommand(env: NodeJS.ProcessEnv = process.env): Command {
   const url = env.KV_REST_API_URL ?? env.UPSTASH_REDIS_REST_URL;
@@ -77,8 +116,7 @@ export function snapshotLoader({ command, namespace, historyNamespace = namespac
 }) {
   const key = `reef:${namespace}:snapshot`, failureKey = `${key}:error`;
   const historyKey = `reef:${historyNamespace}:history`, baselineKey = `${historyKey}:baseline`, lock = `${historyKey}:lock`;
-  const fresh = (updatedAt?: string | null): updatedAt is string =>
-    !!updatedAt && now() - Date.parse(updatedAt) < FRESH_MS;
+  const fresh = (updatedAt?: string | null): updatedAt is string => snapshotIsFresh(updatedAt, now());
   async function state(entry: Entry | null, failure: Failure | null, includeHistory: boolean): Promise<CacheState> {
     const snapshot = entry?.snapshot ?? null;
     const current: CacheState = { snapshot, error: failure?.message ?? null, fresh: fresh(snapshot?.updatedAt) };

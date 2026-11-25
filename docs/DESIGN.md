@@ -303,11 +303,10 @@ Unknown or repeated parameters, unknown pool IDs, and invalid types return 400.
 A nonempty filter that selects no nodes produces a visible pool-specific preview
 error and a 422 dump response; it never silently removes a pool or changes paths.
 
-Snapshots are shared through Upstash Redis, using the Marketplace-provided
+By default snapshots are shared through Upstash Redis, using the Marketplace-provided
 `KV_REST_API_URL` and `KV_REST_API_TOKEN` (or Upstash's standard
 `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`). These are hosting
-credentials, not subscription configuration. There is no in-memory production
-fallback. Cache keys include the deployment identity; a new deployment starts
+credentials, not subscription configuration. Cache keys include the deployment identity; a new deployment starts
 with no usable snapshot. The first authenticated preview, dump, or rule request
 loads upstreams and rule resources. Incorrect passwords never contact Redis or
 upstreams. Snapshots are fresh for one hour from successful completion; reads do
@@ -328,6 +327,15 @@ read rule bodies.
 Refresh workers have a three-minute compiler timeout and a four-minute lock.
 Other requests wait up to one minute for an active refresh, then return a retry
 error. A failed or expired worker cannot overwrite a newer snapshot.
+
+Set `web.redis_enabled: false` to operate temporarily without Redis. Each warm
+function instance retains its own snapshot and shares one in-flight refresh
+among its requests. The first authenticated request on a cold instance compiles
+the snapshot, including rules, and may be slower. Freshness and failure rules
+still apply. Force update refreshes the instance handling that request, and
+instances can serve snapshots generated at different times. History is
+unavailable in this mode and existing Redis history is left intact. The flag
+is a boolean, defaults to `true`, and takes effect on deployment.
 
 The preview shows the snapshot time, freshness, refresh errors, a Force update
 button, all exit endpoints and pool nodes, selected
@@ -430,7 +438,7 @@ that same Python compiler with private input on stdin and suppressed diagnostics
 there is no second subscription compiler in TypeScript. Internal file rendering
 continues to use the same compiler for smoke and integration checks.
 Website builds target Linux amd64, matching the Vercel Node runtime.
-Connect an Upstash Redis database to the Vercel project's Production environment
+When Redis is enabled, connect an Upstash Redis database to the Vercel project's Production environment
 through Marketplace, then redeploy so the function receives the integration's
 environment variables. Local development needs the same REST URL/token pair in
 its environment; these credentials are never committed or placed in `config.yaml`.

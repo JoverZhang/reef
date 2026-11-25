@@ -79,6 +79,7 @@ class Config:
     web_password: str | None
     fetch_tunnel: str | None = None
     rule_update_interval: int = 3600
+    redis_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -190,10 +191,15 @@ def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config
         raise ValueError("secret must be a string of exactly 64 lowercase hex characters")
     web_password = None
     fetch_tunnel = None
-    web = _config_mapping(values.get("web", {}), {"password", "fetch_tunnel", "rule_update_interval"}, "web")
+    web = _config_mapping(values.get("web", {}), {
+        "password", "fetch_tunnel", "rule_update_interval", "redis_enabled",
+    }, "web")
     rule_update_interval = web.get("rule_update_interval", Config.rule_update_interval)
     if type(rule_update_interval) is not int or rule_update_interval < 1:
         raise ValueError("web.rule_update_interval must be a positive integer in seconds")
+    redis_enabled = web.get("redis_enabled", Config.redis_enabled)
+    if type(redis_enabled) is not bool:
+        raise ValueError("web.redis_enabled must be a boolean")
     if "web" in values:
         fetch_tunnel = web.get("fetch_tunnel")
         if "fetch_tunnel" in web and (not isinstance(fetch_tunnel, str) or not fetch_tunnel):
@@ -266,6 +272,7 @@ def parse_config(values: dict[str, Any], *, require_ssh: bool = False) -> Config
         web_password=web_password,
         fetch_tunnel=fetch_tunnel,
         rule_update_interval=rule_update_interval,
+        redis_enabled=redis_enabled,
     )
 
 
@@ -1027,7 +1034,8 @@ def prepare_web(model: Model) -> None:
         "upstream_urls", "extend_proxies", "proxy_providers", "proxy_groups", "exit_providers", "pools",
         "rule_update_interval",
     )}
-    bootstrap = {"passwordHash": password_hash, "poolIds": list(model.config.pools), "buildId": uuid.uuid4().hex}
+    bootstrap = {"passwordHash": password_hash, "poolIds": list(model.config.pools),
+                 "buildId": uuid.uuid4().hex, "redisEnabled": model.config.redis_enabled}
     _write_private(project_path("web", "generated", "input.json"), json.dumps({"config": config, "context": context, "fetch_tunnel": fetch_tunnel_input(model)}))
     _write_private(project_path("web", "generated", "bootstrap.ts"),
                    "import 'server-only';\nexport const bootstrap = " + json.dumps(bootstrap) + ";\n")

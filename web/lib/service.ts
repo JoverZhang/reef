@@ -99,7 +99,7 @@ export function subscriptionService(
         if (!/^[1-9][0-9]{0,6}$/.test(page) || (id !== undefined && !/^[a-f0-9-]{36}$/.test(id))) {
           throw new RequestError(400, "Invalid history page or entry.");
         }
-        if (!readHistory) throw new RefreshError("Update history is unavailable.");
+        if (!readHistory) throw new RequestError(503, "Update history is disabled while Redis is off.");
         const result = await readHistory(Number(page), id);
         if (id && !("entry" in result)) throw new RequestError(404, "History entry is no longer available.");
         return response(JSON.stringify(result), 200, "application/json");
